@@ -78,3 +78,7 @@ func SlinMessage(payload []byte) Message {
 	copy(msg[3:], payload)
 	return Message{Data: msg, Len: len(msg)}
 }
+
+func HangupMessage() Message {
+	return Message{Data: []byte{KindHangup}, Len: 1}
+}
