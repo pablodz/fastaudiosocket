@@ -2,10 +2,10 @@ package fastaudiosocket
 
 import (
 	"encoding/binary"
+	"errors"
 	"io"
 
 	"github.com/google/uuid"
-	"github.com/pkg/errors"
 )
 
 // Constants for message types.
@@ -22,8 +22,9 @@ const (
 
 // Message represents an audiosocket message.
 type Message struct {
-	Data []byte
-	Len  int // Actual length of the message
+	Data        []byte
+	Len         int  // Actual length of the message
+	MessageType byte // Type of the message
 }
 
 // NextMessage reads the next message from the connection.
@@ -33,7 +34,7 @@ func NextMessage(r io.Reader) (Message, error) {
 
 	// Read the 3-byte header.
 	if _, err := io.ReadFull(r, buf[:HeaderSize]); err != nil {
-		return Message{}, errors.Wrap(err, "failed to read header")
+		return Message{}, errors.New("failed to read header")
 	}
 
 	// Extract the payload length.
@@ -47,16 +48,18 @@ func NextMessage(r io.Reader) (Message, error) {
 	// Read the payload if present.
 	if payloadLen > 0 {
 		if _, err := io.ReadFull(r, buf[HeaderSize:totalLen]); err != nil {
-			return Message{}, errors.Wrap(err, "failed to read payload")
+			return Message{}, errors.New("failed to read payload")
 		}
 	}
 
-	return Message{Data: buf[:totalLen], Len: totalLen}, nil
+	// Create a Message and set the type based on the first byte of the data
+	messageType := buf[0]
+	return Message{Data: buf[:totalLen], Len: totalLen, MessageType: messageType}, nil
 }
 
 // ID extracts the UUID from an ID message.
 func (m Message) ID() (uuid.UUID, error) {
-	if m.Len < HeaderSize || m.Data[0] != KindID {
+	if m.Len < HeaderSize || m.MessageType != KindID {
 		return uuid.Nil, errors.New("invalid ID message")
 	}
 	return uuid.FromBytes(m.Data[HeaderSize:])
@@ -68,6 +71,7 @@ func (m *Message) Reset() {
 	if m.Len > 0 {
 		m.Data = m.Data[:0] // Reset slice length but keep underlying array
 		m.Len = 0           // Reset the length
+		m.MessageType = 0   // Reset the message type
 	}
 }
 
@@ -76,9 +80,9 @@ func SlinMessage(payload []byte) Message {
 	msg[0] = KindSlin
 	binary.BigEndian.PutUint16(msg[1:3], uint16(len(payload)))
 	copy(msg[3:], payload)
-	return Message{Data: msg, Len: len(msg)}
+	return Message{Data: msg, Len: len(msg), MessageType: KindSlin}
 }
 
 func HangupMessage() Message {
-	return Message{Data: []byte{KindHangup}, Len: 1}
+	return Message{Data: []byte{KindHangup}, Len: 1, MessageType: KindHangup}
 }
