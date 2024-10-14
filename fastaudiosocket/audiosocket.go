@@ -70,3 +70,11 @@ func (m *Message) Reset() {
 		m.Len = 0           // Reset the length
 	}
 }
+
+func SlinMessage(payload []byte) Message {
+	msg := make([]byte, 3+len(payload))
+	msg[0] = KindSlin
+	binary.BigEndian.PutUint16(msg[1:3], uint16(len(payload)))
+	copy(msg[3:], payload)
+	return Message{Data: msg, Len: len(msg)}
+}
