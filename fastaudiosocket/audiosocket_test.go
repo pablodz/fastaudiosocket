@@ -1,144 +1,62 @@
 package fastaudiosocket
 
-// import (
-// 	"bytes"
-// 	"encoding/binary"
-// 	"errors"
-// 	"io"
-// 	"sync"
-// 	"testing"
+import (
+	"bytes"
+	"testing"
 
-// 	"github.com/google/uuid"
-// 	"github.com/pablodz/audiosocket"
-// )
+	"github.com/pablodz/audiosocket" // Adjust the import path accordingly
+)
 
-// // Helper function to create a message with the specified kind and payload.
-// func createMessage(kind byte, payload []byte) []byte {
-// 	payloadLen := len(payload)
-// 	msg := make([]byte, 3+payloadLen)
-// 	msg[0] = kind
-// 	binary.BigEndian.PutUint16(msg[1:3], uint16(payloadLen))
-// 	copy(msg[3:], payload)
-// 	return msg
-// }
+func createSampleMessages() (*bytes.Reader, error) {
+	var buf bytes.Buffer
 
-// // Benchmark for comparing NextMessage and NextReader functions.
-// func BenchmarkMessageReading(b *testing.B) {
-// 	// Create a buffer to simulate a connection with multiple messages.
-// 	var buffer bytes.Buffer
+	// Create a sample message.
+	payload := make([]byte, 320) // Example payload of 320 bytes.
+	msg := SlinMessage(payload)
 
-// 	// Populate the buffer with some test messages.
-// 	for i := 0; i < 1000; i++ {
-// 		// Create a UUID and its byte representation for the ID message.
-// 		id := uuid.New()
-// 		message := createMessage(KindSlin, id[:])
-// 		buffer.Write(message)
-// 	}
+	// Write the message to the buffer multiple times.
+	for i := 0; i < 1000; i++ {
+		buf.Write(msg.Data)
+	}
 
-// 	// Benchmark for NextMessage from audiosocket.
-// 	b.Run("AudiosocketOne", func(b *testing.B) {
-// 		b.ResetTimer()
-// 		for i := 0; i < b.N; i++ {
-// 			// Reset the buffer reader for each iteration.
-// 			reader := bytes.NewReader(buffer.Bytes())
-// 			for {
-// 				_, err := audiosocket.NextMessage(reader)
-// 				if err != nil {
-// 					if errors.Is(err, io.EOF) {
-// 						break
-// 					}
-// 					b.Fatal(err) // Fail the benchmark on error
-// 				}
-// 			}
-// 		}
-// 	})
+	return bytes.NewReader(buf.Bytes()), nil
+}
 
-// 	// Benchmark for NextReader (assumed to be defined elsewhere).
-// 	b.Run("FastAudiosocketOne", func(b *testing.B) {
-// 		b.ResetTimer()
-// 		for i := 0; i < b.N; i++ {
-// 			// Reset the buffer reader for each iteration.
-// 			reader := bytes.NewReader(buffer.Bytes())
-// 			for {
-// 				_, err := NextMessage(reader) // Assuming NextReader is implemented.
-// 				if err != nil {
-// 					if errors.Is(err, io.EOF) {
-// 						break
-// 					}
-// 					b.Fatal(err) // Fail the benchmark on error
-// 				}
-// 			}
-// 		}
-// 	})
-// }
+// BenchmarkNextMessage compares the NextMessage function of fastaudiosocket and audiosocket.
+func BenchmarkNextMessage(b *testing.B) {
+	rFastaudio, err := createSampleMessages()
+	if err != nil {
+		b.Fatal(err)
+	}
 
-// // Concurrent benchmark for comparing NextMessage and NextReader functions.
-// func BenchmarkConcurrentMessageReading(b *testing.B) {
-// 	// Create a buffer to simulate a connection with multiple messages.
-// 	var buffer bytes.Buffer
+	rAudio, err := createSampleMessages()
+	if err != nil {
+		b.Fatal(err)
+	}
 
-// 	// Populate the buffer with some test messages.
-// 	for i := 0; i < 1000; i++ {
-// 		// Create a UUID and its byte representation for the ID message.
-// 		id := uuid.New()
-// 		message := createMessage(KindSlin, id[:])
-// 		buffer.Write(message)
-// 	}
+	var msg Message // Declare a variable to hold the message.
 
-// 	// Define the number of concurrent readers.
-// 	numReaders := 100
+	b.Run("Fastaudio NextMessage", func(b *testing.B) {
+		b.ResetTimer() // Reset timer before the actual benchmarking.
+		for i := 0; i < b.N; i++ {
+			var err error
+			msg, err = NextMessage(rFastaudio)
+			if err != nil {
+				b.Fatal(err) // Fail the benchmark if there's an error.
+			}
+			msg.Reset()           // Clear the message after processing.
+			rFastaudio.Seek(0, 0) // Reset the reader for the next iteration.
+		}
+	})
 
-// 	// Benchmark for NextMessage from audiosocket.
-// 	b.Run("Concurrent Audiosocket", func(b *testing.B) {
-// 		b.ResetTimer()
-
-// 		var wg sync.WaitGroup
-// 		for i := 0; i < numReaders; i++ {
-// 			wg.Add(1)
-// 			go func() {
-// 				defer wg.Done()
-// 				for j := 0; j < b.N; j++ {
-// 					// Reset the buffer reader for each iteration.
-// 					reader := bytes.NewReader(buffer.Bytes())
-// 					for {
-// 						_, err := audiosocket.NextMessage(reader)
-// 						if err != nil {
-// 							if errors.Is(err, io.EOF) {
-// 								break
-// 							}
-// 							b.Fatal(err) // Fail the benchmark on error
-// 						}
-// 					}
-// 				}
-// 			}()
-// 		}
-// 		wg.Wait()
-// 	})
-
-// 	// Benchmark for NextReader (assumed to be defined elsewhere).
-// 	b.Run("Concurrent FastAudiosocket", func(b *testing.B) {
-// 		b.ResetTimer()
-
-// 		var wg sync.WaitGroup
-// 		for i := 0; i < numReaders; i++ {
-// 			wg.Add(1)
-// 			go func() {
-// 				defer wg.Done()
-// 				for j := 0; j < b.N; j++ {
-// 					// Reset the buffer reader for each iteration.
-// 					reader := bytes.NewReader(buffer.Bytes())
-// 					for {
-// 						_, err := NextMessage(reader) // Assuming NextReader is implemented.
-// 						if err != nil {
-// 							if errors.Is(err, io.EOF) {
-// 								break
-// 							}
-// 							b.Fatal(err) // Fail the benchmark on error
-// 						}
-// 					}
-// 				}
-// 			}()
-// 		}
-// 		wg.Wait()
-// 	})
-// }
+	b.Run("Audio NextMessage", func(b *testing.B) {
+		b.ResetTimer() // Reset timer before the actual benchmarking.
+		for i := 0; i < b.N; i++ {
+			_, err := audiosocket.NextMessage(rAudio)
+			if err != nil {
+				b.Fatal(err) // Fail the benchmark if there's an error.
+			}
+			rAudio.Seek(0, 0) // Reset the reader for the next iteration.
+		}
+	})
+}

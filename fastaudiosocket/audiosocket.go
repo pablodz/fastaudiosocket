@@ -3,12 +3,12 @@ package fastaudiosocket
 import (
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 
 	"github.com/google/uuid"
 )
 
-// Constants for message types.
 const (
 	KindHangup  = 0x00
 	KindID      = 0x01
@@ -16,73 +16,90 @@ const (
 	KindSlin    = 0x10
 	KindError   = 0xff
 
-	MaxMessageSize = 65535 // Maximum payload size
-	HeaderSize     = 3     // Size of the header
+	MaxMessageSize = 320
+	HeaderSize     = 3
 )
 
-// Message represents an audiosocket message.
+var (
+	ErrInvalidHeader   = errors.New("failed to read header")
+	ErrPayloadTooLarge = fmt.Errorf("payload size exceeds maximum of %d bytes", MaxMessageSize)
+	ErrInvalidPayload  = errors.New("failed to read payload")
+	ErrInvalidIDMsg    = errors.New("invalid ID message")
+)
+
+// Message represents an audio message with a type, payload, and length.
 type Message struct {
 	Data        []byte
-	Len         int  // Actual length of the message
-	MessageType byte // Type of the message
+	Len         int
+	MessageType byte
 }
 
-// NextMessage reads the next message from the connection.
+// NextMessage reads the next message from an io.Reader.
 func NextMessage(r io.Reader) (Message, error) {
-	// Allocate a buffer just for the message
-	buf := make([]byte, HeaderSize+MaxMessageSize)
+	var buf [HeaderSize + MaxMessageSize]byte // Use a fixed-size array to avoid allocations
 
-	// Read the 3-byte header.
 	if _, err := io.ReadFull(r, buf[:HeaderSize]); err != nil {
-		return Message{}, errors.New("failed to read header")
+		return Message{}, fmt.Errorf("%w: %v", ErrInvalidHeader, err)
 	}
 
-	// Extract the payload length.
 	payloadLen := int(binary.BigEndian.Uint16(buf[1:3]))
-	if payloadLen < 0 || payloadLen > MaxMessageSize {
-		return Message{}, errors.New("invalid payload size")
+	if payloadLen > MaxMessageSize {
+		return Message{}, ErrPayloadTooLarge
 	}
 
 	totalLen := HeaderSize + payloadLen
 
-	// Read the payload if present.
 	if payloadLen > 0 {
 		if _, err := io.ReadFull(r, buf[HeaderSize:totalLen]); err != nil {
-			return Message{}, errors.New("failed to read payload")
+			return Message{}, fmt.Errorf("%w: %v", ErrInvalidPayload, err)
 		}
 	}
 
-	// Create a Message and set the type based on the first byte of the data
-	messageType := buf[0]
-	return Message{Data: buf[:totalLen], Len: totalLen, MessageType: messageType}, nil
+	return Message{
+		Data:        buf[:totalLen],
+		Len:         totalLen,
+		MessageType: buf[0],
+	}, nil
 }
 
-// ID extracts the UUID from an ID message.
+// ID extracts a UUID from a KindID message.
 func (m Message) ID() (uuid.UUID, error) {
 	if m.Len < HeaderSize || m.MessageType != KindID {
-		return uuid.Nil, errors.New("invalid ID message")
+		return uuid.Nil, ErrInvalidIDMsg
 	}
 	return uuid.FromBytes(m.Data[HeaderSize:])
 }
 
-// Optimized for performance: reuse buffers and minimize allocations
+// Reset clears the message contents.
 func (m *Message) Reset() {
-	// Optionally clear the data slice to release references
-	if m.Len > 0 {
-		m.Data = m.Data[:0] // Reset slice length but keep underlying array
-		m.Len = 0           // Reset the length
-		m.MessageType = 0   // Reset the message type
-	}
+	m.Data = m.Data[:0]
+	m.Len = 0
+	m.MessageType = 0
 }
 
+// SlinMessage constructs a message of KindSlin with a given payload.
 func SlinMessage(payload []byte) Message {
-	msg := make([]byte, 3+len(payload))
+	if len(payload) > MaxMessageSize {
+		panic("payload exceeds maximum allowed size")
+	}
+
+	msg := make([]byte, HeaderSize+len(payload))
 	msg[0] = KindSlin
 	binary.BigEndian.PutUint16(msg[1:3], uint16(len(payload)))
 	copy(msg[3:], payload)
-	return Message{Data: msg, Len: len(msg), MessageType: KindSlin}
+
+	return Message{
+		Data:        msg,
+		Len:         len(msg),
+		MessageType: KindSlin,
+	}
 }
 
+// HangupMessage creates a hangup message.
 func HangupMessage() Message {
-	return Message{Data: []byte{KindHangup}, Len: 1, MessageType: KindHangup}
+	return Message{
+		Data:        []byte{KindHangup},
+		Len:         HeaderSize, // Corrected length to match HeaderSize
+		MessageType: KindHangup,
+	}
 }
