@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"sync"
 
 	"github.com/google/uuid"
 )
@@ -34,14 +33,8 @@ type Message struct {
 	MessageType byte
 }
 
-var bufferPool = sync.Pool{
-	New: func() any {
-		return &[HeaderSize + MaxMessageSize]byte{}
-	},
-}
-
 func NextMessage(r io.Reader) (Message, error) {
-	buf := bufferPool.Get().(*[HeaderSize + MaxMessageSize]byte)
+	var buf [HeaderSize + MaxMessageSize]byte // Use a fixed-size array to avoid allocations
 
 	if _, err := io.ReadFull(r, buf[:HeaderSize]); err != nil {
 		return Message{}, fmt.Errorf("%w: %v", ErrInvalidHeader, err)
@@ -53,6 +46,7 @@ func NextMessage(r io.Reader) (Message, error) {
 	}
 
 	totalLen := HeaderSize + payloadLen
+
 	if payloadLen > 0 {
 		if _, err := io.ReadFull(r, buf[HeaderSize:totalLen]); err != nil {
 			return Message{}, fmt.Errorf("%w: %v", ErrInvalidPayload, err)
@@ -99,7 +93,7 @@ func SlinMessage(payload []byte) Message {
 func HangupMessage() Message {
 	return Message{
 		Data:        []byte{KindHangup},
-		Len:         HeaderSize - 2,
+		Len:         HeaderSize, // Corrected length to match HeaderSize
 		MessageType: KindHangup,
 	}
 }
