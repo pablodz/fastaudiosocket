@@ -56,7 +56,7 @@ func NextMessage(r io.Reader) (Message, error) {
 
 // ID extracts the UUID from an ID message.
 func (m Message) ID() (uuid.UUID, error) {
-	if m.Len < HeaderSize || m.MessageType != KindID {
+	if m.MessageType != KindID {
 		return uuid.Nil, errors.New("invalid ID message")
 	}
 	return uuid.FromBytes(m.Data[HeaderSize:])
