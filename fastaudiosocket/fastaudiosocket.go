@@ -38,20 +38,24 @@ func NextMessage(r io.Reader) (Message, error) {
 		return Message{}, errors.New("failed to read header")
 	}
 
-	// Extract the payload length (ensure it's always 320) and uuid
-	payloadLen := int(binary.BigEndian.Uint16(buf[1:3]))
-	if payloadLen != MaxMessageSize && buf[0] != KindID {
-		return Message{}, errors.New("invalid payload size, must be 320 bytes")
+	// Extract the payload length and check if it's a valid type
+	messageType := buf[0]
+	var payloadLen int
+	if messageType == KindSlin {
+		payloadLen = 323 // For KindSlin, the payload length is 323 bytes
+	} else if messageType == KindID {
+		payloadLen = MaxMessageSize
+	} else {
+		// Other kinds are treated as flags and don't enforce payload length
+		return Message{Data: buf, Len: HeaderSize, MessageType: messageType}, nil
 	}
 
-	// Read the payload (always 320 bytes)
-	if _, err := io.ReadFull(r, buf[HeaderSize:]); err != nil {
+	// Read the payload (323 bytes for KindSlin or 320 bytes for KindID)
+	if _, err := io.ReadFull(r, buf[HeaderSize:HeaderSize+payloadLen]); err != nil {
 		return Message{}, errors.New("failed to read payload")
 	}
 
-	// Create a Message and set the type based on the first byte of the data
-	messageType := buf[0]
-	return Message{Data: buf, Len: TotalMessageSize, MessageType: messageType}, nil
+	return Message{Data: buf, Len: HeaderSize + payloadLen, MessageType: messageType}, nil
 }
 
 // ID extracts the UUID from an ID message.
@@ -59,7 +63,7 @@ func (m Message) ID() (uuid.UUID, error) {
 	if m.MessageType != KindID {
 		return uuid.Nil, errors.New("invalid ID message")
 	}
-	return uuid.FromBytes(m.Data[HeaderSize:])
+	return uuid.FromBytes(m.Data[HeaderSize:]) // Expecting UUID to start right after the header
 }
 
 // Optimized for performance: reuse buffers and minimize allocations
@@ -75,7 +79,7 @@ func (m *Message) Reset() {
 func SlinMessage(payload []byte) Message {
 	msg := make([]byte, TotalMessageSize)
 	msg[0] = KindSlin
-	binary.BigEndian.PutUint16(msg[1:3], uint16(MaxMessageSize)) // Always 320
+	binary.BigEndian.PutUint16(msg[1:3], uint16(323)) // Always 323 for Slin messages
 	copy(msg[3:], payload)
 
 	// Pad with zeros if the payload is less than 320 bytes
