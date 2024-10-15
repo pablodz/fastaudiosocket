@@ -16,28 +16,35 @@ const (
 	AudioChunkSize      = 320 // Size of PCM data in bytes for 20ms of audio
 )
 
-// FastAudioSocket represents the audio socket connection.
+// FastAudioSocket represents the audio socket connection and handles both reading and writing.
 type FastAudioSocket struct {
-	conn net.Conn
+	conn    net.Conn
+	uuid    [16]byte // Store the first UUID
+	uuidSet bool     // Flag to indicate if UUID has been set
 }
 
-// NewAudioSocket creates a new AudioSocket with the given TCP connection.
-func NewAudioSocket(conn net.Conn) *FastAudioSocket {
-	return &FastAudioSocket{conn: conn}
-}
+// NewFastAudioSocket creates a new FastAudioSocket with the given TCP connection
+// and captures the UUID from the first packet.
+func NewFastAudioSocket(conn net.Conn) (*FastAudioSocket, error) {
+	s := &FastAudioSocket{conn: conn}
 
-// Writer handles sending audio packets.
-type Writer struct {
-	conn net.Conn
-}
+	// Read the first packet to capture the UUID if it's available
+	packetType, payload, err := s.ReadPacket()
+	if err != nil {
+		return nil, fmt.Errorf("failed to read first packet: %w", err)
+	}
 
-// NewWriter creates a new Writer instance.
-func NewWriter(conn net.Conn) *Writer {
-	return &Writer{conn: conn}
+	// Check if the first packet is a UUID packet
+	if packetType == PacketTypeUUID {
+		copy(s.uuid[:], payload)
+		s.uuidSet = true
+	}
+
+	return s, nil
 }
 
 // WritePCM sends a PCM audio packet.
-func (w *Writer) WritePCM(data []byte) error {
+func (s *FastAudioSocket) WritePCM(data []byte) error {
 	if len(data) == 0 {
 		return fmt.Errorf("no data to send")
 	}
@@ -47,56 +54,45 @@ func (w *Writer) WritePCM(data []byte) error {
 	binary.BigEndian.PutUint16(packet[1:3], uint16(len(data)))
 	copy(packet[3:], data)
 
-	_, err := w.conn.Write(packet)
+	// Use a single write to send the packet
+	_, err := s.conn.Write(packet)
 	return err
 }
 
 // StreamAudio sends a large slice of PCM audio data spaced by a specified delay in milliseconds.
-func (w *Writer) StreamAudio(audioData []byte, delayMs int) error {
+func (s *FastAudioSocket) StreamAudio(audioData []byte, delayMs int) error {
 	if len(audioData) == 0 {
 		return fmt.Errorf("no audio data to stream")
 	}
 
+	// Preallocate a slice to avoid reallocations
+	chunk := make([]byte, AudioChunkSize)
+
+	startTime := time.Now()
 	for i := 0; i < len(audioData); i += AudioChunkSize {
 		end := i + AudioChunkSize
 		if end > len(audioData) {
 			end = len(audioData)
 		}
-		chunk := audioData[i:end]
+		copy(chunk[:end-i], audioData[i:end]) // Copy data into the chunk
 
-		err := w.WritePCM(chunk)
-		if err != nil {
+		if err := s.WritePCM(chunk[:end-i]); err != nil {
 			return fmt.Errorf("failed to write PCM data: %w", err)
 		}
 
-		time.Sleep(time.Duration(delayMs) * time.Millisecond) // Wait for the specified delay
+		// Calculate time spent on sending data
+		elapsed := time.Since(startTime)
+		time.Sleep(time.Duration(delayMs)*time.Millisecond - elapsed)
+		startTime = time.Now() // Reset start time for the next iteration
 	}
+
 	return nil
 }
 
-// Terminate sends a termination packet.
-func (w *Writer) Terminate() error {
-	packet := []byte{PacketTypeTerminate, 0x00, 0x00} // 3-byte terminate packet
-	_, err := w.conn.Write(packet)
-	return err
-}
-
-// Reader handles receiving audio packets.
-type Reader struct {
-	conn    net.Conn
-	uuid    [16]byte // Store the first UUID
-	uuidSet bool     // Flag to indicate if UUID has been set
-}
-
-// NewReader creates a new Reader instance.
-func NewReader(conn net.Conn) *Reader {
-	return &Reader{conn: conn}
-}
-
 // ReadPacket reads a single packet from the connection.
-func (r *Reader) ReadPacket() (byte, []byte, error) {
+func (s *FastAudioSocket) ReadPacket() (byte, []byte, error) {
 	header := make([]byte, 3)
-	_, err := r.conn.Read(header)
+	_, err := s.conn.Read(header)
 	if err != nil {
 		return 0, nil, err
 	}
@@ -104,26 +100,27 @@ func (r *Reader) ReadPacket() (byte, []byte, error) {
 	packetType := header[0]
 	payloadLength := binary.BigEndian.Uint16(header[1:3])
 	payload := make([]byte, payloadLength)
-	_, err = r.conn.Read(payload)
+	_, err = s.conn.Read(payload)
 	if err != nil {
 		return packetType, nil, err
-	}
-
-	// Check for UUID packet and store it
-	if packetType == PacketTypeUUID && !r.uuidSet {
-		copy(r.uuid[:], payload)
-		r.uuidSet = true
 	}
 
 	return packetType, payload, nil
 }
 
 // GetUUID returns the stored UUID if set.
-func (r *Reader) GetUUID() ([16]byte, bool) {
-	return r.uuid, r.uuidSet
+func (s *FastAudioSocket) GetUUID() ([16]byte, bool) {
+	return s.uuid, s.uuidSet
+}
+
+// Terminate sends a termination packet.
+func (s *FastAudioSocket) Terminate() error {
+	packet := []byte{PacketTypeTerminate, 0x00, 0x00} // 3-byte terminate packet
+	_, err := s.conn.Write(packet)
+	return err
 }
 
 // Close closes the connection.
-func (a *FastAudioSocket) Close() error {
-	return a.conn.Close()
+func (s *FastAudioSocket) Close() error {
+	return s.conn.Close()
 }
