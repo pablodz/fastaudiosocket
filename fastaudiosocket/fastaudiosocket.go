@@ -38,9 +38,9 @@ func NextMessage(r io.Reader) (Message, error) {
 		return Message{}, errors.New("failed to read header")
 	}
 
-	// Extract the payload length (ensure it's always 320)
+	// Extract the payload length (ensure it's always 320) and uuid
 	payloadLen := int(binary.BigEndian.Uint16(buf[1:3]))
-	if payloadLen != MaxMessageSize {
+	if payloadLen != MaxMessageSize && buf[0] != KindID {
 		return Message{}, errors.New("invalid payload size, must be 320 bytes")
 	}
 
