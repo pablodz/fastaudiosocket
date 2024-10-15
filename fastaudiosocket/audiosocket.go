@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sync"
 
 	"github.com/google/uuid"
 )
@@ -27,16 +28,20 @@ var (
 	ErrInvalidIDMsg    = errors.New("invalid ID message")
 )
 
-// Message represents an audio message with a type, payload, and length.
 type Message struct {
 	Data        []byte
 	Len         int
 	MessageType byte
 }
 
-// NextMessage reads the next message from an io.Reader.
+var bufferPool = sync.Pool{
+	New: func() any {
+		return &[HeaderSize + MaxMessageSize]byte{}
+	},
+}
+
 func NextMessage(r io.Reader) (Message, error) {
-	var buf [HeaderSize + MaxMessageSize]byte // Use a fixed-size array to avoid allocations
+	buf := bufferPool.Get().(*[HeaderSize + MaxMessageSize]byte)
 
 	if _, err := io.ReadFull(r, buf[:HeaderSize]); err != nil {
 		return Message{}, fmt.Errorf("%w: %v", ErrInvalidHeader, err)
@@ -48,7 +53,6 @@ func NextMessage(r io.Reader) (Message, error) {
 	}
 
 	totalLen := HeaderSize + payloadLen
-
 	if payloadLen > 0 {
 		if _, err := io.ReadFull(r, buf[HeaderSize:totalLen]); err != nil {
 			return Message{}, fmt.Errorf("%w: %v", ErrInvalidPayload, err)
@@ -62,7 +66,6 @@ func NextMessage(r io.Reader) (Message, error) {
 	}, nil
 }
 
-// ID extracts a UUID from a KindID message.
 func (m Message) ID() (uuid.UUID, error) {
 	if m.Len < HeaderSize || m.MessageType != KindID {
 		return uuid.Nil, ErrInvalidIDMsg
@@ -70,14 +73,12 @@ func (m Message) ID() (uuid.UUID, error) {
 	return uuid.FromBytes(m.Data[HeaderSize:])
 }
 
-// Reset clears the message contents.
 func (m *Message) Reset() {
 	m.Data = m.Data[:0]
 	m.Len = 0
 	m.MessageType = 0
 }
 
-// SlinMessage constructs a message of KindSlin with a given payload.
 func SlinMessage(payload []byte) Message {
 	if len(payload) > MaxMessageSize {
 		panic("payload exceeds maximum allowed size")
@@ -95,11 +96,10 @@ func SlinMessage(payload []byte) Message {
 	}
 }
 
-// HangupMessage creates a hangup message.
 func HangupMessage() Message {
 	return Message{
 		Data:        []byte{KindHangup},
-		Len:         HeaderSize, // Corrected length to match HeaderSize
+		Len:         HeaderSize - 2,
 		MessageType: KindHangup,
 	}
 }
