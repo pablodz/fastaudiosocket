@@ -16,8 +16,9 @@ const (
 	KindSlin    = 0x10
 	KindError   = 0xff
 
-	MaxMessageSize = 320 // Maximum payload size
-	HeaderSize     = 3   // Size of the header
+	MaxMessageSize   = 320                         // Maximum payload size
+	HeaderSize       = 3                           // Size of the header
+	TotalMessageSize = HeaderSize + MaxMessageSize // Total size of the message
 )
 
 // Message represents an audiosocket message.
@@ -30,31 +31,27 @@ type Message struct {
 // NextMessage reads the next message from the connection.
 func NextMessage(r io.Reader) (Message, error) {
 	// Allocate a buffer just for the message
-	buf := make([]byte, HeaderSize+MaxMessageSize)
+	buf := make([]byte, TotalMessageSize)
 
 	// Read the 3-byte header.
 	if _, err := io.ReadFull(r, buf[:HeaderSize]); err != nil {
 		return Message{}, errors.New("failed to read header")
 	}
 
-	// Extract the payload length.
+	// Extract the payload length (ensure it's always 320)
 	payloadLen := int(binary.BigEndian.Uint16(buf[1:3]))
-	if payloadLen < 0 || payloadLen > MaxMessageSize {
-		return Message{}, errors.New("invalid payload size")
+	if payloadLen != MaxMessageSize {
+		return Message{}, errors.New("invalid payload size, must be 320 bytes")
 	}
 
-	totalLen := HeaderSize + payloadLen
-
-	// Read the payload if present.
-	if payloadLen > 0 {
-		if _, err := io.ReadFull(r, buf[HeaderSize:totalLen]); err != nil {
-			return Message{}, errors.New("failed to read payload")
-		}
+	// Read the payload (always 320 bytes)
+	if _, err := io.ReadFull(r, buf[HeaderSize:]); err != nil {
+		return Message{}, errors.New("failed to read payload")
 	}
 
 	// Create a Message and set the type based on the first byte of the data
 	messageType := buf[0]
-	return Message{Data: buf[:totalLen], Len: totalLen, MessageType: messageType}, nil
+	return Message{Data: buf, Len: TotalMessageSize, MessageType: messageType}, nil
 }
 
 // ID extracts the UUID from an ID message.
@@ -76,13 +73,22 @@ func (m *Message) Reset() {
 }
 
 func SlinMessage(payload []byte) Message {
-	msg := make([]byte, 3+len(payload))
+	msg := make([]byte, TotalMessageSize)
 	msg[0] = KindSlin
-	binary.BigEndian.PutUint16(msg[1:3], uint16(len(payload)))
+	binary.BigEndian.PutUint16(msg[1:3], uint16(MaxMessageSize)) // Always 320
 	copy(msg[3:], payload)
-	return Message{Data: msg, Len: len(msg), MessageType: KindSlin}
+
+	// Pad with zeros if the payload is less than 320 bytes
+	for i := len(payload) + 3; i < TotalMessageSize; i++ {
+		msg[i] = 0
+	}
+
+	return Message{Data: msg, Len: TotalMessageSize, MessageType: KindSlin}
 }
 
 func HangupMessage() Message {
-	return Message{Data: []byte{KindHangup}, Len: 1, MessageType: KindHangup}
+	msg := make([]byte, TotalMessageSize)
+	msg[0] = KindHangup
+	// No payload to set, rest will be padded with zeros
+	return Message{Data: msg, Len: TotalMessageSize, MessageType: KindHangup}
 }
