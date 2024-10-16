@@ -65,6 +65,7 @@ func (s *FastAudioSocket) StreamPCM8khz(audioData []byte) error {
 				}
 				if _, err := s.conn.Write(packet); err != nil {
 					fmt.Printf("failed to write PCM data: %v\n", err)
+					return
 				}
 			}
 		}
