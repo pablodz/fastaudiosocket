@@ -88,24 +88,25 @@ func (s *FastAudioSocket) StreamPCM8khz(audioData []byte) error {
 			end = len(audioData)
 		}
 
-		// Check if there's enough data to send a full packet
-		if end-i < AudioChunkSize && end < len(audioData) {
-			// Not enough data to form a complete packet, omit this chunk
-			continue
+		// Only copy if there's data to send
+		if end > i {
+			// Copy data into the chunk
+			copy(chunk[:end-i], audioData[i:end])
+
+			// Get a packet from the pool
+			packet := packetPool.Get().([]byte)
+			if cap(packet) < 3+end-i { // Ensure we have enough capacity
+				return fmt.Errorf("packet from pool is too small")
+			}
+			packet[0] = PacketTypePCM
+			binary.BigEndian.PutUint16(packet[1:3], uint16(end-i))
+			copy(packet[3:], chunk[:end-i])
+
+			packetChan <- packet
 		}
-
-		copy(chunk[:end-i], audioData[i:end]) // Copy data into the chunk
-
-		// Get a packet from the pool
-		packet := packetPool.Get().([]byte)
-		packet[0] = PacketTypePCM
-		binary.BigEndian.PutUint16(packet[1:3], uint16(end-i))
-		copy(packet[3:], chunk[:end-i])
-
-		packetChan <- packet
 	}
 
-	close(packetChan)
+	close(packetChan) // Safe to close after the sending loop
 
 	return nil
 }
