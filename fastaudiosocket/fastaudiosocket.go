@@ -4,7 +4,6 @@ import (
 	"encoding/binary"
 	"fmt"
 	"net"
-	"sync"
 	"time"
 )
 
@@ -50,39 +49,27 @@ func (s *FastAudioSocket) StreamPCM8khz(audioData []byte) error {
 		return fmt.Errorf("no audio data to stream")
 	}
 
-	packetPool := sync.Pool{
-		New: func() interface{} {
-			return make([]byte, 3+AudioChunkSize)
-		},
-	}
+	// Preallocate a slice to avoid reallocations
+	chunk := make([]byte, AudioChunkSize)
+	packetChan := make(chan []byte)
 
-	packetChan := make(chan []byte, 20) // Increase buffer size for better performance
-	var wg sync.WaitGroup               // WaitGroup to wait for goroutine completion
-
-	// Start a goroutine to write packets
-	wg.Add(1) // Add one goroutine to the wait group
 	go func() {
-		defer wg.Done() // Mark this goroutine as done when it exits
 		ticker := time.NewTicker(20 * time.Millisecond)
 		defer ticker.Stop()
 
-		for {
+		for range ticker.C {
 			select {
 			case packet, ok := <-packetChan:
 				if !ok {
-					return // Channel closed, exit goroutine
+					return
 				}
 				if _, err := s.conn.Write(packet); err != nil {
-					// Handle error accordingly, e.g., log or notify
 					fmt.Printf("failed to write PCM data: %v\n", err)
+					return
 				}
-				// Return packet to pool for reuse
-				packetPool.Put(packet)
-
-			case <-ticker.C:
-				// Optionally handle timeouts or other periodic tasks here
 			}
 		}
+
 	}()
 
 	for i := 0; i < len(audioData); i += AudioChunkSize {
@@ -90,20 +77,18 @@ func (s *FastAudioSocket) StreamPCM8khz(audioData []byte) error {
 		if end > len(audioData) {
 			end = len(audioData)
 		}
-
-		// Acquire a packet from the pool
-		packet := packetPool.Get().([]byte)
+		copy(chunk[:end-i], audioData[i:end]) // Copy data into the chunk
 
 		// Prepare the packet for sending
+		packet := make([]byte, 3+end-i)
 		packet[0] = PacketTypePCM
 		binary.BigEndian.PutUint16(packet[1:3], uint16(end-i))
-		copy(packet[3:], audioData[i:end]) // Directly copy from audioData
+		copy(packet[3:], chunk[:end-i])
 
-		packetChan <- packet[:3+(end-i)] // Send the packet slice
+		packetChan <- packet
 	}
 
-	close(packetChan) // Close the channel to signal completion
-	wg.Wait()         // Wait for the goroutine to finish
+	close(packetChan)
 
 	return nil
 }
