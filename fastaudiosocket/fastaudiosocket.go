@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"sync"
 	"time"
@@ -124,7 +125,7 @@ func (s *FastAudioSocket) StreamAudio(audioData []byte, delayMs int) error {
 // ReadPacket reads a single packet from the connection.
 func (s *FastAudioSocket) ReadPacket() (byte, []byte, error) {
 	header := make([]byte, 3)
-	if _, err := s.reader.Read(header); err != nil {
+	if _, err := io.ReadFull(s.reader, header); err != nil {
 		return 0, nil, err
 	}
 
@@ -132,7 +133,7 @@ func (s *FastAudioSocket) ReadPacket() (byte, []byte, error) {
 	payloadLength := binary.BigEndian.Uint16(header[1:3])
 	payload := make([]byte, payloadLength)
 
-	if _, err := s.reader.Read(payload); err != nil {
+	if _, err := io.ReadFull(s.reader, payload); err != nil {
 		return packetType, nil, err
 	}
 
