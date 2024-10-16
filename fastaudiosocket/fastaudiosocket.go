@@ -87,6 +87,13 @@ func (s *FastAudioSocket) StreamPCM8khz(audioData []byte) error {
 		if end > len(audioData) {
 			end = len(audioData)
 		}
+
+		// Check if there's enough data to send a full packet
+		if end-i < AudioChunkSize && end < len(audioData) {
+			// Not enough data to form a complete packet, omit this chunk
+			continue
+		}
+
 		copy(chunk[:end-i], audioData[i:end]) // Copy data into the chunk
 
 		// Get a packet from the pool
