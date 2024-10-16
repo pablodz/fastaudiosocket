@@ -1,6 +1,7 @@
 package fastaudiosocket
 
 import (
+	"bytes"
 	"encoding/binary"
 	"fmt"
 	"net"
@@ -72,6 +73,11 @@ func (s *FastAudioSocket) StreamPCM8khz(audioData []byte) error {
 				if !ok {
 					return
 				}
+
+				if isAllZeroes(packet[3:]) {
+					continue
+				}
+
 				if _, err := s.conn.Write(packet); err != nil {
 					fmt.Printf("failed to write PCM data: %v\n", err)
 					// print the pull length and the packet
@@ -112,6 +118,12 @@ func (s *FastAudioSocket) StreamPCM8khz(audioData []byte) error {
 	close(packetChan) // Safe to close after the sending loop
 
 	return nil
+}
+
+var emptyAudioPacketData = make([]byte, 320)
+
+func isAllZeroes(data []byte) bool {
+	return len(data) == 0 || bytes.Equal(data, emptyAudioPacketData)
 }
 
 // ReadPacket reads a single packet from the connection.
