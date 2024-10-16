@@ -4,7 +4,6 @@ import (
 	"encoding/binary"
 	"fmt"
 	"net"
-	"time"
 )
 
 // Constants for packet types
@@ -68,7 +67,6 @@ func (s *FastAudioSocket) StreamAudio(audioData []byte, delayMs int) error {
 	// Preallocate a slice to avoid reallocations
 	chunk := make([]byte, AudioChunkSize)
 
-	startTime := time.Now()
 	for i := 0; i < len(audioData); i += AudioChunkSize {
 		end := i + AudioChunkSize
 		if end > len(audioData) {
@@ -79,11 +77,6 @@ func (s *FastAudioSocket) StreamAudio(audioData []byte, delayMs int) error {
 		if err := s.WritePCM(chunk[:end-i]); err != nil {
 			return fmt.Errorf("failed to write PCM data: %w", err)
 		}
-
-		// Calculate time spent on sending data
-		elapsed := time.Since(startTime)
-		time.Sleep(time.Duration(delayMs)*time.Millisecond - elapsed)
-		startTime = time.Now() // Reset start time for the next iteration
 	}
 
 	return nil
