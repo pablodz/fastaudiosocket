@@ -67,6 +67,8 @@ func (s *FastAudioSocket) StreamPCM8khz(audioData []byte) error {
 		ticker := time.NewTicker(20 * time.Millisecond)
 		defer ticker.Stop()
 
+		lastPacket := []byte{}
+
 		for range ticker.C {
 			select {
 			case packet, ok := <-packetChan:
@@ -79,12 +81,16 @@ func (s *FastAudioSocket) StreamPCM8khz(audioData []byte) error {
 				}
 
 				if _, err := s.conn.Write(packet); err != nil {
-					fmt.Printf("failed to write PCM data: %v\n", err)
 					// print the pull length and the packet
-					fmt.Printf("packet length: %v\n", len(packet))
-					fmt.Printf("packet: %v\n", packet)
+					fmt.Printf("> last packet length: %v\n", len(lastPacket))
+					fmt.Printf("> last packet: %v\n", lastPacket)
+					fmt.Printf("- packet length: %v\n", len(packet))
+					fmt.Printf("- packet: %v\n", packet)
+					fmt.Printf("failed to write PCM data: %v\n", err)
 					return
 				}
+
+				lastPacket = packet
 				// Return the packet to the pool after use
 				packetPool.Put(packet)
 			}
