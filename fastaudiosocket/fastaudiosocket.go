@@ -4,7 +4,6 @@ import (
 	"encoding/binary"
 	"fmt"
 	"net"
-	"sync"
 	"time"
 )
 
@@ -19,25 +18,15 @@ const (
 
 // FastAudioSocket represents the audio socket connection and handles both reading and writing.
 type FastAudioSocket struct {
-	conn       net.Conn
-	uuid       [16]byte   // Store the first UUID
-	uuidSet    bool       // Flag to indicate if UUID has been set
-	packetPool *sync.Pool // Pool for packet buffers
+	conn    net.Conn
+	uuid    [16]byte // Store the first UUID
+	uuidSet bool     // Flag to indicate if UUID has been set
 }
 
 // NewFastAudioSocket creates a new FastAudioSocket with the given TCP connection
 // and captures the UUID from the first packet.
 func NewFastAudioSocket(conn net.Conn) (*FastAudioSocket, error) {
-	pool := &sync.Pool{
-		New: func() interface{} {
-			return make([]byte, AudioChunkSize+3) // Preallocate space for packets
-		},
-	}
-
-	s := &FastAudioSocket{
-		conn:       conn,
-		packetPool: pool,
-	}
+	s := &FastAudioSocket{conn: conn}
 
 	// Read the first packet to capture the UUID if it's available
 	packetType, payload, err := s.ReadPacket()
@@ -60,19 +49,14 @@ func (s *FastAudioSocket) WritePCM(data []byte) error {
 		return fmt.Errorf("no data to send")
 	}
 
-	packet := s.packetPool.Get().([]byte)
-	defer s.packetPool.Put(packet)
-
+	packet := make([]byte, 3+len(data))
 	packet[0] = PacketTypePCM
 	binary.BigEndian.PutUint16(packet[1:3], uint16(len(data)))
 	copy(packet[3:], data)
 
-	// Write directly to the connection
-	if _, err := s.conn.Write(packet); err != nil {
-		return fmt.Errorf("failed to write packet: %w", err)
-	}
-
-	return nil
+	// Use a single write to send the packet
+	_, err := s.conn.Write(packet)
+	return err
 }
 
 // StreamAudio sends a large slice of PCM audio data spaced by a specified delay in milliseconds.
@@ -81,14 +65,18 @@ func (s *FastAudioSocket) StreamAudio(audioData []byte, delayMs int) error {
 		return fmt.Errorf("no audio data to stream")
 	}
 
+	// Preallocate a slice to avoid reallocations
+	chunk := make([]byte, AudioChunkSize)
+
 	startTime := time.Now()
 	for i := 0; i < len(audioData); i += AudioChunkSize {
 		end := i + AudioChunkSize
 		if end > len(audioData) {
 			end = len(audioData)
 		}
+		copy(chunk[:end-i], audioData[i:end]) // Copy data into the chunk
 
-		if err := s.WritePCM(audioData[i:end]); err != nil {
+		if err := s.WritePCM(chunk[:end-i]); err != nil {
 			return fmt.Errorf("failed to write PCM data: %w", err)
 		}
 
@@ -104,14 +92,16 @@ func (s *FastAudioSocket) StreamAudio(audioData []byte, delayMs int) error {
 // ReadPacket reads a single packet from the connection.
 func (s *FastAudioSocket) ReadPacket() (byte, []byte, error) {
 	header := make([]byte, 3)
-	if _, err := s.conn.Read(header); err != nil {
+	_, err := s.conn.Read(header)
+	if err != nil {
 		return 0, nil, err
 	}
 
 	packetType := header[0]
 	payloadLength := binary.BigEndian.Uint16(header[1:3])
 	payload := make([]byte, payloadLength)
-	if _, err := s.conn.Read(payload); err != nil {
+	_, err = s.conn.Read(payload)
+	if err != nil {
 		return packetType, nil, err
 	}
 
@@ -126,10 +116,8 @@ func (s *FastAudioSocket) GetUUID() ([16]byte, bool) {
 // Terminate sends a termination packet.
 func (s *FastAudioSocket) Terminate() error {
 	packet := []byte{PacketTypeTerminate, 0x00, 0x00} // 3-byte terminate packet
-	if _, err := s.conn.Write(packet); err != nil {
-		return err
-	}
-	return nil
+	_, err := s.conn.Write(packet)
+	return err
 }
 
 // Close closes the connection.
