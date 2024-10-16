@@ -4,6 +4,8 @@ import (
 	"encoding/binary"
 	"fmt"
 	"net"
+	"sync"
+	"time"
 )
 
 // Constants for packet types
@@ -42,27 +44,48 @@ func NewFastAudioSocket(conn net.Conn) (*FastAudioSocket, error) {
 	return s, nil
 }
 
-// WritePCM sends a PCM audio packet.
-func (s *FastAudioSocket) WritePCM(data []byte) error {
-	if len(data) == 0 {
-		return fmt.Errorf("no data to send")
-	}
-
-	packet := make([]byte, 3+len(data))
-	packet[0] = PacketTypePCM
-	binary.BigEndian.PutUint16(packet[1:3], uint16(len(data)))
-	copy(packet[3:], data)
-
-	// Use a single write to send the packet
-	_, err := s.conn.Write(packet)
-	return err
-}
-
-// StreamAudio sends a large slice of PCM audio data spaced by a specified delay in milliseconds.
-func (s *FastAudioSocket) StreamAudio(audioData []byte, delayMs int) error {
+// StreamWritePCM sends PCM audio data in chunks with a specified delay of 20 milliseconds between packets.
+func (s *FastAudioSocket) StreamWritePCM(audioData []byte) error {
+	const packetDelay = 20 * time.Millisecond // Define the desired delay between packets
 	if len(audioData) == 0 {
 		return fmt.Errorf("no audio data to stream")
 	}
+
+	// Preallocate a packet buffer to avoid reallocations
+	packetBuffer := make([]byte, 3+AudioChunkSize) // Max size needed for a packet
+	packetBuffer[0] = PacketTypePCM                // Set packet type
+
+	// Create a buffered channel to send packets
+	packetChannel := make(chan []byte, 10) // Buffer for 10 packets
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		// Start a ticker for the specified packet delay
+		ticker := time.NewTicker(packetDelay)
+		defer ticker.Stop() // Ensure ticker stops when the goroutine exits
+
+		for {
+			select {
+			case packet, ok := <-packetChannel:
+				if !ok {
+					return // Exit if the channel is closed
+				}
+
+				// Wait for the next tick before sending the packet
+				<-ticker.C // Wait for the ticker to tick
+
+				if _, err := s.conn.Write(packet); err != nil {
+					fmt.Printf("failed to write PCM data: %v\n", err) // Log error but don't stop streaming
+				}
+
+			default:
+				// If there are no packets to send, wait for the next tick
+				<-ticker.C
+			}
+		}
+	}()
 
 	// Preallocate a slice to avoid reallocations
 	chunk := make([]byte, AudioChunkSize)
@@ -74,11 +97,16 @@ func (s *FastAudioSocket) StreamAudio(audioData []byte, delayMs int) error {
 		}
 		copy(chunk[:end-i], audioData[i:end]) // Copy data into the chunk
 
-		if err := s.WritePCM(chunk[:end-i]); err != nil {
-			return fmt.Errorf("failed to write PCM data: %w", err)
-		}
+		// Prepare the packet for sending
+		binary.BigEndian.PutUint16(packetBuffer[1:3], uint16(end-i)) // Set the length of the chunk
+		copy(packetBuffer[3:], chunk[:end-i])                        // Copy the chunk into the packet
+
+		// Send the packet to the channel
+		packetChannel <- packetBuffer[:3+end-i] // Send the slice of the packet buffer
 	}
 
+	close(packetChannel) // Close the channel after all packets are sent
+	wg.Wait()            // Wait for the goroutine to finish
 	return nil
 }
 
