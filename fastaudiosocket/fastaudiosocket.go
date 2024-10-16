@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"net"
+	"sync"
 	"time"
 )
 
@@ -43,6 +44,14 @@ func NewFastAudioSocket(conn net.Conn) (*FastAudioSocket, error) {
 	return s, nil
 }
 
+// Initialize a sync.Pool for packet slices.
+var packetPool = sync.Pool{
+	New: func() interface{} {
+		// Allocate a new packet slice of maximum expected size
+		return make([]byte, 3+AudioChunkSize)
+	},
+}
+
 // StreamPCM8khz sends PCM audio data in chunks with a specified delay in milliseconds.
 func (s *FastAudioSocket) StreamPCM8khz(audioData []byte) error {
 	if len(audioData) == 0 {
@@ -67,9 +76,10 @@ func (s *FastAudioSocket) StreamPCM8khz(audioData []byte) error {
 					fmt.Printf("failed to write PCM data: %v\n", err)
 					return
 				}
+				// Return the packet to the pool after use
+				packetPool.Put(packet)
 			}
 		}
-
 	}()
 
 	for i := 0; i < len(audioData); i += AudioChunkSize {
@@ -79,8 +89,8 @@ func (s *FastAudioSocket) StreamPCM8khz(audioData []byte) error {
 		}
 		copy(chunk[:end-i], audioData[i:end]) // Copy data into the chunk
 
-		// Prepare the packet for sending
-		packet := make([]byte, 3+end-i)
+		// Get a packet from the pool
+		packet := packetPool.Get().([]byte)
 		packet[0] = PacketTypePCM
 		binary.BigEndian.PutUint16(packet[1:3], uint16(end-i))
 		copy(packet[3:], chunk[:end-i])
