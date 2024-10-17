@@ -282,8 +282,8 @@ func (s *FastAudioSocket) monitor() {
 
 func (s *FastAudioSocket) StreamWritePCM8khz(audioData []byte) error {
 	if s.debug {
-		fmt.Println("-- StreamPCM8khz START --")
-		defer fmt.Println("-- StreamPCM8khz STOP --")
+		fmt.Println("-- StreamWritePCM8khz START --")
+		defer fmt.Println("-- StreamWritePCM8khz STOP --")
 	}
 
 	if len(audioData) < MaxPacketSize {
