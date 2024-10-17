@@ -51,8 +51,7 @@ func (p *Packet) toBytes() []byte {
 
 func (s *FastAudioSocket) sendPacket(packet Packet) {
 	if s.debug {
-		fmt.Printf(">>> Sending packet: Type=%#x, Length=%v\n", packet.Header[0], len(packet.Data))
-		fmt.Printf(">>> Payload: %v\n", packet.Data)
+		fmt.Printf(">>> Sending packet: Type=%#x, Length=%v, Payload: %v\n", packet.Header[0], len(packet.Data), packet.Data)
 	}
 	serialized := packet.toBytes()
 	if _, err := s.conn.Write(serialized); err != nil {
@@ -147,8 +146,7 @@ func (s *FastAudioSocket) ReadPacket() (Packet, error) {
 	}
 
 	if s.debug {
-		fmt.Printf("<<< Received packet: Type=%#x, Length=%v\n", packetType, payloadLength)
-		fmt.Printf("<<< Payload: %v\n", payload)
+		fmt.Printf("<<< Received packet: Type=%#x, Length=%v, Payload: %v\n", packetType, payloadLength, payload)
 	}
 
 	return Packet{
