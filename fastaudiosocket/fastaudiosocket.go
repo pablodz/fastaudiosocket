@@ -83,7 +83,7 @@ func (s *FastAudioSocket) StreamPCM8khz(audioData []byte, debug bool) error {
 				}
 
 				// sometimes the last packet is empty, skip it, also skip empty packets
-				if len(packet) == 0 || bytes.Equal(packet, emptyAudioPacketData) {
+				if len(packet) == 0 || bytes.Equal(packet[3:], emptyAudioPacketData) {
 					continue
 				}
 
