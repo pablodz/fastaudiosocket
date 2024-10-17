@@ -91,26 +91,25 @@ func NewFastAudioSocket(ctx context.Context, conn net.Conn, debug bool, monitorE
 	}
 	s.uuid = uuid.String()
 
-	go s.streamRead()
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go s.streamRead(&wg)
 	if monitorEnabled {
-		go s.monitor()
+		wg.Add(1)
+		go s.monitor(&wg)
 	}
 
 	go func() {
-		<-ctx.Done()
-		s.closeInternal()
+		wg.Wait()
+		if s.debug {
+			fmt.Println("Closing FastAudioSocket...")
+		}
+		close(s.AudioChan)
+		close(s.MonitorChan)
+		s.conn.Close()
 	}()
 
 	return s, nil
-}
-
-func (s *FastAudioSocket) closeInternal() {
-	if s.debug {
-		fmt.Println("Closing FastAudioSocket...")
-	}
-	close(s.AudioChan)
-	close(s.MonitorChan)
-	s.conn.Close()
 }
 
 func (s *FastAudioSocket) readUUID() (uuid.UUID, error) {
@@ -176,7 +175,8 @@ func (s *FastAudioSocket) readChunk() (PacketReader, error) {
 	}, nil
 }
 
-func (s *FastAudioSocket) streamRead() {
+func (s *FastAudioSocket) streamRead(wg *sync.WaitGroup) {
+	defer wg.Done()
 	if s.debug {
 		fmt.Println("-- StreamRead START --")
 		defer fmt.Println("-- StreamRead STOP --")
@@ -210,7 +210,8 @@ func (s *FastAudioSocket) streamRead() {
 	}
 }
 
-func (s *FastAudioSocket) monitor() {
+func (s *FastAudioSocket) monitor(wg *sync.WaitGroup) {
+	defer wg.Done()
 	if s.debug {
 		fmt.Println("-- Monitor START --")
 		defer fmt.Println("-- Monitor STOP --")
