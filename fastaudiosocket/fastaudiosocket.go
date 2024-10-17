@@ -82,7 +82,8 @@ func (s *FastAudioSocket) StreamPCM8khz(audioData []byte, debug bool) error {
 					return // Channel closed, exit goroutine
 				}
 
-				if bytes.Equal(packet, emptyAudioPacketData) {
+				// sometimes the last packet is empty, skip it, also skip empty packets
+				if len(packet) == 0 || bytes.Equal(packet, emptyAudioPacketData) {
 					continue
 				}
 
