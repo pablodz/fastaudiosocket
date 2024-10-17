@@ -54,10 +54,10 @@ func getSilentPacket() []byte {
 }
 
 type FastAudioSocket struct {
-	conn       net.Conn
-	uuid       string
-	debug      bool
-	readerChan chan PacketReader
+	conn      net.Conn
+	uuid      string
+	debug     bool
+	audioChan chan PacketReader
 }
 
 func (p *PacketWriter) toBytes() []byte {
@@ -85,9 +85,9 @@ func (s *FastAudioSocket) sendPacket(packet PacketWriter) {
 // Modify NewFastAudioSocket to accept a debug parameter
 func NewFastAudioSocket(conn net.Conn, debug bool) (*FastAudioSocket, error) {
 	s := &FastAudioSocket{
-		conn:       conn,
-		debug:      debug,
-		readerChan: make(chan PacketReader),
+		conn:      conn,
+		debug:     debug,
+		audioChan: make(chan PacketReader),
 	}
 
 	uuid, err := s.readUUID()
@@ -173,7 +173,7 @@ func (s *FastAudioSocket) StreamRead(ctx context.Context, cancel context.CancelF
 
 	defer func() {
 		cancel()
-		close(s.readerChan)
+		close(s.audioChan)
 	}()
 
 	for {
@@ -189,7 +189,14 @@ func (s *FastAudioSocket) StreamRead(ctx context.Context, cancel context.CancelF
 				return
 			}
 
-			s.readerChan <- packet
+			if packet.Type != PacketTypePCM {
+				if s.debug {
+					fmt.Printf("Received packet with type %#x\n", packet.Type)
+				}
+				return
+			}
+
+			s.audioChan <- packet
 		}
 	}
 }
