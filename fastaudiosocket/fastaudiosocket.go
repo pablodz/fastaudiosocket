@@ -87,6 +87,17 @@ func (s *FastAudioSocket) StreamPCM8khz(audioData []byte, debug bool) error {
 					continue
 				}
 
+				if packet[0] != PacketTypePCM {
+					fmt.Printf("unexpected packet type: %v\n", packet[0])
+					continue
+				}
+
+				// bytes 1-2 are the length of the payload and should be equal to AudioChunkSize
+				if packet[1] != 0x01 || packet[2] != 0x40 {
+					fmt.Printf("unexpected packet length: %v\n", packet[1:3])
+					continue
+				}
+
 				if debug {
 					// print headers, 3 first bytes and length
 					fmt.Printf("packet header: %v, length: %v\n", packet[:3], len(packet))
