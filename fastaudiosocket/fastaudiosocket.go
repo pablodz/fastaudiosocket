@@ -70,7 +70,6 @@ type FastAudioSocket struct {
 	debug        bool
 }
 
-// Constructor que recibe el contexto y configura el socket
 func NewFastAudioSocket(ctx context.Context, conn net.Conn, debug bool, monitorEnabled bool) (*FastAudioSocket, error) {
 	ctx, cancel := context.WithCancel(ctx)
 
@@ -353,8 +352,8 @@ func (s *FastAudioSocket) StreamWritePCM8khz(audioData []byte) error {
 		}
 	}
 
-	close(packetChan) // Cerrar el canal después de enviar todos los paquetes.
-	wg.Wait()         // Esperar a que la goroutine termine.
+	close(packetChan)
+	wg.Wait()
 
 	return nil
 }
