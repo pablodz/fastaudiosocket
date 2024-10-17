@@ -82,37 +82,26 @@ func (s *FastAudioSocket) StreamPCM8khz(audioData []byte, debug bool) error {
 					return // Channel closed, exit goroutine
 				}
 
-				// sometimes the last packet is empty, skip it, also skip empty packets
-				if len(packet) == 0 || bytes.Equal(packet[3:], emptyAudioPacketData) {
-					continue
-				}
-
-				if packet[0] != PacketTypePCM {
-					fmt.Printf("unexpected packet type: %v\n", packet[0])
-					continue
-				}
-
-				// bytes 1-2 are the length of the payload and should be equal to AudioChunkSize
-				if packet[1] != 0x01 || packet[2] != 0x40 {
-					fmt.Printf("unexpected packet length: %v\n", packet[1:3])
-					continue
-				}
-
 				if debug {
 					// print headers, 3 first bytes and length
 					fmt.Printf("packet header: %v, length: %v\n", packet[:3], len(packet))
 				}
 
 				if _, err := s.conn.Write(packet); err != nil {
-					fmt.Printf("> last packet length: %v\n", len(lastPacket))
-					fmt.Printf("> last packet: %v\n", lastPacket)
-					fmt.Printf("- packet length: %v\n", len(packet))
-					fmt.Printf("- packet: %v\n", packet)
+					if debug {
+						fmt.Printf("> last packet length: %v\n", len(lastPacket))
+						fmt.Printf("> last packet: %v\n", lastPacket)
+						fmt.Printf("- packet length: %v\n", len(packet))
+						fmt.Printf("- packet: %v\n", packet)
+					}
 					fmt.Printf("failed to write PCM data: %v\n", err)
 					return
 				}
 
-				lastPacket = packet
+				if debug {
+					lastPacket = packet
+				}
+
 				packetPool.Put(packet) // Return the packet to the pool
 			}
 		}
@@ -136,6 +125,22 @@ func (s *FastAudioSocket) StreamPCM8khz(audioData []byte, debug bool) error {
 		packet[0] = PacketTypePCM
 		binary.BigEndian.PutUint16(packet[1:3], uint16(len(chunk)))
 		copy(packet[3:], chunk)
+
+		// sometimes the last packet is empty, skip it, also skip empty packets
+		if len(packet) == 0 || bytes.Equal(packet[3:], emptyAudioPacketData) {
+			continue
+		}
+
+		if packet[0] != PacketTypePCM {
+			fmt.Printf("unexpected packet type: %v\n", packet[0])
+			continue
+		}
+
+		// bytes 1-2 are the length of the payload and should be equal to AudioChunkSize
+		if packet[1] != 0x01 || packet[2] != 0x40 {
+			fmt.Printf("unexpected packet length: %v\n", packet[1:3])
+			continue
+		}
 
 		packetChan <- packet
 	}
