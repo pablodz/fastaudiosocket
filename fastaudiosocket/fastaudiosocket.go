@@ -52,10 +52,6 @@ func getSilentPacket() []byte {
 	return silentPacket
 }
 
-func newPCM8khzPacket(chunk []byte) PacketWriter {
-	return PacketWriter{Header: writingHeader, Payload: chunk}
-}
-
 func (p *PacketWriter) toBytes() []byte {
 	packetBuffer := make([]byte, MaxPacketSize)
 	copy(packetBuffer[:HeaderSize], p.Header[:])
@@ -145,7 +141,10 @@ func (s *FastAudioSocket) ReadChunks() (PacketReader, error) {
 
 	payload := make([]byte, payloadLength)
 	if _, err := s.conn.Read(payload); err != nil {
-		return PacketReader{}, err
+		return PacketReader{
+			Type:   packetType,
+			Length: payloadLength,
+		}, err
 	}
 
 	if s.debug {
@@ -174,15 +173,13 @@ func (s *FastAudioSocket) StreamPCM8khz(audioData []byte) error {
 		ticker := time.NewTicker(20 * time.Millisecond)
 		defer ticker.Stop()
 
-		for {
+		for range ticker.C {
 			select {
 			case packet, ok := <-packetChan:
 				if !ok {
 					return
 				}
 				s.sendPacket(packet)
-			case <-ticker.C:
-				// Maintain tick rate even if no packets are ready.
 			}
 		}
 	}()
@@ -196,8 +193,7 @@ func (s *FastAudioSocket) StreamPCM8khz(audioData []byte) error {
 		chunk := audioData[i:end]
 		// complete the last chunk with silence if it is less than WriteChunkSize
 		if len(chunk) < WriteChunkSize {
-			chunk = append(chunk, getSilentPacket()[HeaderSize:]...)
-			chunk = chunk[:WriteChunkSize]
+			chunk = append(chunk, getSilentPacket()[:WriteChunkSize-len(chunk)]...)
 		}
 
 		if bytes.Equal(chunk, getSilentPacket()) {
@@ -212,6 +208,10 @@ func (s *FastAudioSocket) StreamPCM8khz(audioData []byte) error {
 	wg.Wait()         // Wait for the goroutine to finish.
 
 	return nil
+}
+
+func newPCM8khzPacket(chunk []byte) PacketWriter {
+	return PacketWriter{Header: writingHeader, Payload: chunk}
 }
 
 func (s *FastAudioSocket) GetUUID() string {
