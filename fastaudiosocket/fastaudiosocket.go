@@ -18,6 +18,8 @@ const (
 	AudioChunkSize      = 320 // Size of PCM data in bytes for 20ms of audio
 )
 
+var emptyAudioPacketData = make([]byte, AudioChunkSize)
+
 // FastAudioSocket represents the audio socket connection and handles both reading and writing.
 type FastAudioSocket struct {
 	conn    net.Conn
@@ -48,40 +50,48 @@ func NewFastAudioSocket(conn net.Conn) (*FastAudioSocket, error) {
 // Initialize a sync.Pool for packet slices.
 var packetPool = sync.Pool{
 	New: func() interface{} {
-		// Allocate a new packet slice of maximum expected size
-		return make([]byte, 3+AudioChunkSize)
+		return make([]byte, 3+AudioChunkSize) // Allocate for header + data
 	},
 }
 
 // StreamPCM8khz sends PCM audio data in chunks with a specified delay in milliseconds.
-func (s *FastAudioSocket) StreamPCM8khz(audioData []byte) error {
+func (s *FastAudioSocket) StreamPCM8khz(audioData []byte, debug bool) error {
 	if len(audioData) == 0 {
 		return fmt.Errorf("no audio data to stream")
 	}
 
-	// Preallocate a slice to avoid reallocations
-	chunk := make([]byte, AudioChunkSize)
-	packetChan := make(chan []byte)
+	if len(audioData) < AudioChunkSize {
+		fmt.Printf("audio data length not enough: %v\n", len(audioData))
+		return nil
+	}
 
+	packetChan := make(chan []byte)
+	var wg sync.WaitGroup
+
+	wg.Add(1)
 	go func() {
+		defer wg.Done()
 		ticker := time.NewTicker(20 * time.Millisecond)
 		defer ticker.Stop()
 
 		lastPacket := []byte{}
-
 		for range ticker.C {
 			select {
 			case packet, ok := <-packetChan:
 				if !ok {
-					return
+					return // Channel closed, exit goroutine
 				}
 
-				if isAllZeroes(packet[3:]) {
+				if bytes.Equal(packet, emptyAudioPacketData) {
 					continue
 				}
 
+				if debug {
+					// print headers, 3 first bytes and length
+					fmt.Printf("packet header: %v, length: %v\n", packet[:3], len(packet))
+				}
+
 				if _, err := s.conn.Write(packet); err != nil {
-					// print the pull length and the packet
 					fmt.Printf("> last packet length: %v\n", len(lastPacket))
 					fmt.Printf("> last packet: %v\n", lastPacket)
 					fmt.Printf("- packet length: %v\n", len(packet))
@@ -91,8 +101,7 @@ func (s *FastAudioSocket) StreamPCM8khz(audioData []byte) error {
 				}
 
 				lastPacket = packet
-				// Return the packet to the pool after use
-				packetPool.Put(packet)
+				packetPool.Put(packet) // Return the packet to the pool
 			}
 		}
 	}()
@@ -103,48 +112,40 @@ func (s *FastAudioSocket) StreamPCM8khz(audioData []byte) error {
 			end = len(audioData)
 		}
 
-		// Only copy if there's data to send
-		if end > i {
-			// Copy data into the chunk
-			copy(chunk[:end-i], audioData[i:end])
+		chunk := audioData[i:end]
 
-			// Get a packet from the pool
-			packet := packetPool.Get().([]byte)
-			if cap(packet) < 3+end-i { // Ensure we have enough capacity
-				return fmt.Errorf("packet from pool is too small")
-			}
-			packet[0] = PacketTypePCM
-			binary.BigEndian.PutUint16(packet[1:3], uint16(end-i))
-			copy(packet[3:], chunk[:end-i])
-
-			packetChan <- packet
+		// Get a packet from the pool
+		packet := packetPool.Get().([]byte)
+		if cap(packet) < 3+len(chunk) {
+			return fmt.Errorf("packet from pool is too small")
 		}
+
+		// Construct header and copy data
+		packet[0] = PacketTypePCM
+		binary.BigEndian.PutUint16(packet[1:3], uint16(len(chunk)))
+		copy(packet[3:], chunk)
+
+		packetChan <- packet
 	}
 
-	close(packetChan) // Safe to close after the sending loop
+	close(packetChan) // Close the channel after sending all data
+	wg.Wait()         // Wait for the goroutine to finish
 
 	return nil
-}
-
-var emptyAudioPacketData = make([]byte, 320)
-
-func isAllZeroes(data []byte) bool {
-	return len(data) == 0 || bytes.Equal(data, emptyAudioPacketData)
 }
 
 // ReadPacket reads a single packet from the connection.
 func (s *FastAudioSocket) ReadPacket() (byte, []byte, error) {
 	header := make([]byte, 3)
-	_, err := s.conn.Read(header)
-	if err != nil {
+	if _, err := s.conn.Read(header); err != nil {
 		return 0, nil, err
 	}
 
 	packetType := header[0]
 	payloadLength := binary.BigEndian.Uint16(header[1:3])
 	payload := make([]byte, payloadLength)
-	_, err = s.conn.Read(payload)
-	if err != nil {
+
+	if _, err := s.conn.Read(payload); err != nil {
 		return packetType, nil, err
 	}
 
