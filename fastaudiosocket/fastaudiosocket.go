@@ -62,6 +62,7 @@ func getSilentPacket() []byte {
 
 type FastAudioSocket struct {
 	ctx          context.Context
+	cancel       context.CancelFunc
 	conn         net.Conn
 	uuid         string
 	AudioChan    chan PacketReader
@@ -93,9 +94,10 @@ func (s *FastAudioSocket) sendPacket(packet PacketWriter) {
 }
 
 // Modify NewFastAudioSocket to accept a debug parameter
-func NewFastAudioSocket(conn net.Conn, debug bool, ctx context.Context, monitorEnabled bool) (*FastAudioSocket, error) {
+func NewFastAudioSocket(ctx context.Context, cancel context.CancelFunc, conn net.Conn, debug bool, monitorEnabled bool) (*FastAudioSocket, error) {
 	s := &FastAudioSocket{
 		ctx:          ctx,
+		cancel:       cancel,
 		conn:         conn,
 		AudioChan:    make(chan PacketReader),
 		chunkCounter: int32(0),
@@ -189,6 +191,8 @@ func (s *FastAudioSocket) streamRead() {
 		defer fmt.Println("-- StreamRead STOP --")
 	}
 
+	defer s.cancel()
+
 	for {
 		select {
 		case <-s.ctx.Done():
@@ -251,15 +255,15 @@ func (s *FastAudioSocket) monitor() {
 					ChunkCounterReceived: chunksReceived,
 					ExpectedChunks:       chunksExpected,
 				}
-			case chunksReceived < minimalIntermitentChunks:
-				s.MonitorChan <- MonitorResponse{
-					Message:              "Monitor: 🚨 Intermitent chunks received",
-					ChunkCounterReceived: chunksReceived,
-					ExpectedChunks:       chunksExpected,
-				}
 			case chunksReceived == 0:
 				s.MonitorChan <- MonitorResponse{
 					Message:              "Monitor: 🚨 No chunks received",
+					ChunkCounterReceived: chunksReceived,
+					ExpectedChunks:       chunksExpected,
+				}
+			case chunksReceived < minimalIntermitentChunks:
+				s.MonitorChan <- MonitorResponse{
+					Message:              "Monitor: 🚨 Intermitent chunks received",
 					ChunkCounterReceived: chunksReceived,
 					ExpectedChunks:       chunksExpected,
 				}
@@ -353,6 +357,7 @@ func (s *FastAudioSocket) Hangup() error {
 }
 
 func (s *FastAudioSocket) Close() error {
+	s.cancel()
 	close(s.MonitorChan)
 	close(s.AudioChan)
 	return s.conn.Close()
