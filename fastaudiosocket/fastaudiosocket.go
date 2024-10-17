@@ -6,7 +6,6 @@ import (
 	"encoding/binary"
 	"fmt"
 	"net"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -22,6 +21,7 @@ const (
 	WriteChunkSize   = 320 // PCM audio chunk size (20ms of audio)
 	HeaderSize       = 3   // Header: Type (1 byte) + Length (2 bytes)
 	MaxPacketSize    = 323
+	chunksPerSecond  = 50
 )
 
 var (
@@ -39,7 +39,6 @@ type PacketReader struct {
 	Length  uint16
 	Payload []byte
 }
-
 type MonitorResponse struct {
 	Message              string
 	ChunkCounterReceived int32
@@ -56,7 +55,6 @@ func getSilentPacket() []byte {
 			silentPacket[i] = 0xff // set 255 as silent packet
 		}
 	})
-
 	return silentPacket
 }
 
@@ -66,50 +64,30 @@ type FastAudioSocket struct {
 	conn         net.Conn
 	uuid         string
 	AudioChan    chan PacketReader
-	chunkCounter int32
 	MonitorChan  chan MonitorResponse
+	chunkCounter int32
 	debug        bool
 }
 
-func (p *PacketWriter) toBytes() []byte {
-	packetBuffer := make([]byte, MaxPacketSize)
-	copy(packetBuffer[:HeaderSize], p.Header[:])
-	copy(packetBuffer[HeaderSize:], p.Payload)
-	return packetBuffer[:MaxPacketSize]
-}
+// Constructor que recibe el contexto y configura el socket
+func NewFastAudioSocket(ctx context.Context, conn net.Conn, debug bool, monitorEnabled bool) (*FastAudioSocket, error) {
+	ctx, cancel := context.WithCancel(ctx)
 
-func (s *FastAudioSocket) sendPacket(packet PacketWriter) {
-	serialized := packet.toBytes()
-	if s.debug {
-		fmt.Printf(">>> Sending packet: Type=%#x, Length=%v\n", packet.Header[0], len(packet.Payload))
-	}
-	if _, err := s.conn.Write(serialized); err != nil {
-		if strings.HasSuffix(err.Error(), "broken pipe") {
-			return
-		}
-		if s.debug {
-			fmt.Printf("Failed to write packet: %v\n", err)
-		}
-	}
-}
-
-// Modify NewFastAudioSocket to accept a debug parameter
-func NewFastAudioSocket(ctx context.Context, cancel context.CancelFunc, conn net.Conn, debug bool, monitorEnabled bool) (*FastAudioSocket, error) {
 	s := &FastAudioSocket{
 		ctx:          ctx,
 		cancel:       cancel,
 		conn:         conn,
 		AudioChan:    make(chan PacketReader),
-		chunkCounter: int32(0),
 		MonitorChan:  make(chan MonitorResponse),
+		chunkCounter: int32(0),
 		debug:        debug,
 	}
 
 	uuid, err := s.readUUID()
 	if err != nil {
+		cancel()
 		return nil, fmt.Errorf("failed to read UUID: %w", err)
 	}
-
 	s.uuid = uuid.String()
 
 	go s.streamRead()
@@ -117,10 +95,23 @@ func NewFastAudioSocket(ctx context.Context, cancel context.CancelFunc, conn net
 		go s.monitor()
 	}
 
+	go func() {
+		<-ctx.Done()
+		s.closeInternal()
+	}()
+
 	return s, nil
 }
 
-// Read first package as uuid from s.conn, dont use ReadPacket
+func (s *FastAudioSocket) closeInternal() {
+	if s.debug {
+		fmt.Println("Closing FastAudioSocket...")
+	}
+	close(s.AudioChan)
+	close(s.MonitorChan)
+	s.conn.Close()
+}
+
 func (s *FastAudioSocket) readUUID() (uuid.UUID, error) {
 	header := make([]byte, HeaderSize)
 	if _, err := s.conn.Read(header); err != nil {
@@ -184,7 +175,6 @@ func (s *FastAudioSocket) readChunk() (PacketReader, error) {
 	}, nil
 }
 
-// streamRead reads audio packets from the connection and sends them to the audio channel.
 func (s *FastAudioSocket) streamRead() {
 	if s.debug {
 		fmt.Println("-- StreamRead START --")
@@ -219,9 +209,6 @@ func (s *FastAudioSocket) streamRead() {
 	}
 }
 
-const chunksPerSecond = 50
-
-// monitor the chunk counter
 func (s *FastAudioSocket) monitor() {
 	if s.debug {
 		fmt.Println("-- Monitor START --")
@@ -362,11 +349,4 @@ func (s *FastAudioSocket) Hangup() error {
 		return fmt.Errorf("failed to send termination packet: %w", err)
 	}
 	return nil
-}
-
-func (s *FastAudioSocket) Close() error {
-	s.cancel()
-	close(s.MonitorChan)
-	close(s.AudioChan)
-	return s.conn.Close()
 }
