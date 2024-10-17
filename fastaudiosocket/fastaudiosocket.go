@@ -61,13 +61,13 @@ func getSilentPacket() []byte {
 }
 
 type FastAudioSocket struct {
+	ctx          context.Context
 	conn         net.Conn
 	uuid         string
 	debug        bool
-	audioChan    chan PacketReader
-	ctx          context.Context
+	AudioChan    chan PacketReader
 	chunkCounter int32
-	monitorChan  chan MonitorResponse
+	MonitorChan  chan MonitorResponse
 }
 
 func (p *PacketWriter) toBytes() []byte {
@@ -97,7 +97,7 @@ func NewFastAudioSocket(conn net.Conn, debug bool, ctx context.Context, monitorE
 	s := &FastAudioSocket{
 		conn:         conn,
 		debug:        debug,
-		audioChan:    make(chan PacketReader),
+		AudioChan:    make(chan PacketReader),
 		ctx:          ctx,
 		chunkCounter: int32(0),
 	}
@@ -209,7 +209,7 @@ func (s *FastAudioSocket) streamRead() {
 				return
 			}
 
-			s.audioChan <- packet
+			s.AudioChan <- packet
 		}
 	}
 }
@@ -245,25 +245,25 @@ func (s *FastAudioSocket) monitor() {
 
 			switch {
 			case chunksReceived == chunksExpected:
-				s.monitorChan <- MonitorResponse{
+				s.MonitorChan <- MonitorResponse{
 					Message:        "[Monitor] ✅ Expected chunks received",
 					ChunkCounter:   currentCounter,
 					ExpectedChunks: chunksExpected,
 				}
 			case chunksReceived < minimalIntermitentChunks:
-				s.monitorChan <- MonitorResponse{
+				s.MonitorChan <- MonitorResponse{
 					Message:        "[Monitor] 🚨 Intermitent chunks received",
 					ChunkCounter:   currentCounter,
 					ExpectedChunks: chunksExpected,
 				}
 			case chunksReceived == 0:
-				s.monitorChan <- MonitorResponse{
+				s.MonitorChan <- MonitorResponse{
 					Message:        "[Monitor] 🚨 No chunks received",
 					ChunkCounter:   currentCounter,
 					ExpectedChunks: chunksExpected,
 				}
 			case chunksReceived > chunksExpected:
-				s.monitorChan <- MonitorResponse{
+				s.MonitorChan <- MonitorResponse{
 					Message:        "[Monitor] ⚡ Too many chunks received",
 					ChunkCounter:   currentCounter,
 					ExpectedChunks: chunksExpected,
@@ -352,7 +352,7 @@ func (s *FastAudioSocket) Hangup() error {
 }
 
 func (s *FastAudioSocket) Close() error {
-	close(s.monitorChan)
-	close(s.audioChan)
+	close(s.MonitorChan)
+	close(s.AudioChan)
 	return s.conn.Close()
 }
