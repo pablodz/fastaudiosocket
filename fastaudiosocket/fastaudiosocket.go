@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"net"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -263,6 +264,28 @@ func (s *FastAudioSocket) monitor() {
 			}
 
 			lastCounter = currentCounter
+		}
+	}
+}
+
+func (p *PacketWriter) toBytes() []byte {
+	packetBuffer := make([]byte, MaxPacketSize)
+	copy(packetBuffer[:HeaderSize], p.Header[:])
+	copy(packetBuffer[HeaderSize:], p.Payload)
+	return packetBuffer[:MaxPacketSize]
+}
+
+func (s *FastAudioSocket) sendPacket(packet PacketWriter) {
+	serialized := packet.toBytes()
+	if s.debug {
+		fmt.Printf(">>> Sending packet: Type=%#x, Length=%v\n", packet.Header[0], len(packet.Payload))
+	}
+	if _, err := s.conn.Write(serialized); err != nil {
+		if strings.HasSuffix(err.Error(), "broken pipe") {
+			return
+		}
+		if s.debug {
+			fmt.Printf("Failed to write packet: %v\n", err)
 		}
 	}
 }
