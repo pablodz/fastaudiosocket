@@ -290,7 +290,7 @@ func (s *FastAudioSocket) StreamWritePCM8khz(audioData []byte) error {
 		return fmt.Errorf("audio data is too short")
 	}
 
-	packetChan := make(chan PacketWriter)
+	packetChan := make(chan PacketWriter, 10)
 	var wg sync.WaitGroup
 
 	wg.Add(1)
@@ -304,12 +304,13 @@ func (s *FastAudioSocket) StreamWritePCM8khz(audioData []byte) error {
 			select {
 			case <-s.ctx.Done():
 				return
-			case <-ticker.C:
-				packet, ok := <-packetChan
+			case packet, ok := <-packetChan:
 				if !ok {
 					return
 				}
 				s.sendPacket(packet)
+			case <-ticker.C:
+				continue
 			}
 		}
 	}()
@@ -321,21 +322,29 @@ func (s *FastAudioSocket) StreamWritePCM8khz(audioData []byte) error {
 		}
 
 		chunk := audioData[i:end]
-		// complete the last chunk with silence if it is less than WriteChunkSize
+
 		if len(chunk) < WriteChunkSize {
-			chunk = append(chunk, getSilentPacket()[:WriteChunkSize-len(chunk)]...)
+			silence := getSilentPacket()[:WriteChunkSize-len(chunk)]
+			chunk = append(chunk, silence...)
 		}
 
 		if bytes.Equal(chunk, getSilentPacket()) {
-			continue // Skip empty chunks.
+			continue
 		}
 
 		packet := newPCM8khzPacket(chunk)
-		packetChan <- packet
+
+		select {
+		case packetChan <- packet:
+		case <-s.ctx.Done():
+			close(packetChan)
+			wg.Wait()
+			return s.ctx.Err()
+		}
 	}
 
-	close(packetChan) // Close the channel after sending all data.
-	wg.Wait()         // Wait for the goroutine to finish.
+	close(packetChan) // Cerrar el canal después de enviar todos los paquetes.
+	wg.Wait()         // Esperar a que la goroutine termine.
 
 	return nil
 }
