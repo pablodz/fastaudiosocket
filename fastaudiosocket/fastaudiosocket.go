@@ -135,6 +135,14 @@ func (s *FastAudioSocket) ReadAudioChunks() (PacketReader, error) {
 
 	packetType := header[0]
 	payloadLength := binary.BigEndian.Uint16(header[1:3])
+
+	if packetType != PacketTypePCM {
+		return PacketReader{
+			Type:   packetType,
+			Length: payloadLength,
+		}, nil
+	}
+
 	payload := make([]byte, payloadLength)
 	if _, err := s.conn.Read(payload); err != nil {
 		return PacketReader{}, err
