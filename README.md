@@ -2,34 +2,18 @@
 
 ## Install
 
+A better way to manage audiosocket protocol.
+
 ```bash
 go get github.com/pablodz/fastaudiosocket
 ```
 
-## Benchmarks
+## Info
 
-- one tcp connection
+- Read packages
 
-```bash
-goos: linux
-goarch: amd64
-pkg: github.com/pablodz/fastaudiosocket/fastaudiosocket
-cpu: 13th Gen Intel(R) Core(TM) i9-13900H
-BenchmarkMessageReading/AudiosocketOne-20         	   11870	     95138 ns/op	   43587 B/op	    3006 allocs/op
-BenchmarkMessageReading/FastAudiosocketOne-20     	      90	  17924946 ns/op	73802507 B/op	    1009 allocs/op
-PASS
-ok  	github.com/pablodz/fastaudiosocket/fastaudiosocket	3.580s
-```
+All packages sent by asterisk to audiosocket are read by the function `ReadPackage` in the file `audiosocket.go`. Now the package payload in ulaw contains 160 bytes and for pcm 320 bytes.
 
-- 100 concurrent tcp connections
+- Write packages
 
-```bash
-goos: linux
-goarch: amd64
-pkg: github.com/pablodz/fastaudiosocket/fastaudiosocket
-cpu: 13th Gen Intel(R) Core(TM) i9-13900H
-BenchmarkConcurrentMessageReading/Concurrent_Audiosocket-20         	     606	   2211287 ns/op	 4359221 B/op	  300602 allocs/op
-BenchmarkConcurrentMessageReading/Concurrent_FastAudiosocket-20     	       1	2768144937 ns/op	7380447888 B/op	  102880 allocs/op
-PASS
-ok  	github.com/pablodz/fastaudiosocket/fastaudiosocket	5.238s
-```
+All write packages are 320 bytes + 3 headers. The main difference here is that we need to handle from audiosocket server the timing to sent each packet (head+payload) to asterisk on each 20ms. Write only accepts 320 bytes of payload in pcm linear 16 format. (Remember to remove the headers if you are sending the chunk in streaming)
