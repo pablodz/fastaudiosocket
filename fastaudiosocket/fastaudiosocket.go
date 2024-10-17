@@ -93,7 +93,7 @@ func (s *FastAudioSocket) sendPacket(packet PacketWriter) {
 }
 
 // Modify NewFastAudioSocket to accept a debug parameter
-func NewFastAudioSocket(conn net.Conn, debug bool, ctx context.Context) (*FastAudioSocket, error) {
+func NewFastAudioSocket(conn net.Conn, debug bool, ctx context.Context, monitorEnabled bool) (*FastAudioSocket, error) {
 	s := &FastAudioSocket{
 		conn:         conn,
 		debug:        debug,
@@ -108,6 +108,11 @@ func NewFastAudioSocket(conn net.Conn, debug bool, ctx context.Context) (*FastAu
 	}
 
 	s.uuid = uuid.String()
+
+	go s.streamRead()
+	if monitorEnabled {
+		go s.monitor()
+	}
 
 	return s, nil
 }
@@ -176,8 +181,8 @@ func (s *FastAudioSocket) readChunk() (PacketReader, error) {
 	}, nil
 }
 
-// StreamRead reads audio packets from the connection and sends them to the audio channel.
-func (s *FastAudioSocket) StreamRead() {
+// streamRead reads audio packets from the connection and sends them to the audio channel.
+func (s *FastAudioSocket) streamRead() {
 	if s.debug {
 		fmt.Println("-- StreamRead START --")
 		defer fmt.Println("-- StreamRead STOP --")
@@ -211,9 +216,8 @@ func (s *FastAudioSocket) StreamRead() {
 
 const chunksPerSecond = 50
 
-// Monitor the chunk counter
-func (s *FastAudioSocket) Monitor() {
-
+// monitor the chunk counter
+func (s *FastAudioSocket) monitor() {
 	if s.debug {
 		fmt.Println("-- Monitor START --")
 		defer fmt.Println("-- Monitor STOP --")
