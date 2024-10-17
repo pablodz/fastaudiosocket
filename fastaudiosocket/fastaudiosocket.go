@@ -195,7 +195,8 @@ func (s *FastAudioSocket) StreamPCM8khz(audioData []byte) error {
 
 		chunk := audioData[i:end]
 		if len(chunk) < WriteChunkSize {
-			chunk = append(chunk, make([]byte, WriteChunkSize-len(chunk))...)
+			// padd with silence 0xff
+			chunk = append(chunk, getSilentPacket()[HeaderSize:]...)
 		}
 
 		if bytes.Equal(chunk, getSilentPacket()) {
