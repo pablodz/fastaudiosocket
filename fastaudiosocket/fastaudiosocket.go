@@ -127,7 +127,7 @@ func (s *FastAudioSocket) readUUID() (uuid.UUID, error) {
 	return uuid.FromBytes(payload)
 }
 
-func (s *FastAudioSocket) ReadAudioChunks() (PacketReader, error) {
+func (s *FastAudioSocket) ReadChunks() (PacketReader, error) {
 	header := make([]byte, HeaderSize)
 	if _, err := s.conn.Read(header); err != nil {
 		return PacketReader{}, err
