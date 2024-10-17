@@ -247,25 +247,25 @@ func (s *FastAudioSocket) monitor() {
 			switch {
 			case chunksReceived == chunksExpected:
 				s.MonitorChan <- MonitorResponse{
-					Message:              "[Monitor] ✅ Expected chunks received",
+					Message:              "Monitor: ✅ Expected chunks received",
 					ChunkCounterReceived: chunksReceived,
 					ExpectedChunks:       chunksExpected,
 				}
 			case chunksReceived < minimalIntermitentChunks:
 				s.MonitorChan <- MonitorResponse{
-					Message:              "[Monitor] 🚨 Intermitent chunks received",
+					Message:              "Monitor: 🚨 Intermitent chunks received",
 					ChunkCounterReceived: chunksReceived,
 					ExpectedChunks:       chunksExpected,
 				}
 			case chunksReceived == 0:
 				s.MonitorChan <- MonitorResponse{
-					Message:              "[Monitor] 🚨 No chunks received",
+					Message:              "Monitor: 🚨 No chunks received",
 					ChunkCounterReceived: chunksReceived,
 					ExpectedChunks:       chunksExpected,
 				}
 			case chunksReceived > chunksExpected:
 				s.MonitorChan <- MonitorResponse{
-					Message:              "[Monitor] ⚡ Too many chunks received",
+					Message:              "Monitor: ⚡ Too many chunks received",
 					ChunkCounterReceived: chunksReceived,
 					ExpectedChunks:       chunksExpected,
 				}
