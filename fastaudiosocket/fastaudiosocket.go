@@ -64,10 +64,10 @@ type FastAudioSocket struct {
 	ctx          context.Context
 	conn         net.Conn
 	uuid         string
-	debug        bool
 	AudioChan    chan PacketReader
 	chunkCounter int32
 	MonitorChan  chan MonitorResponse
+	debug        bool
 }
 
 func (p *PacketWriter) toBytes() []byte {
@@ -95,11 +95,12 @@ func (s *FastAudioSocket) sendPacket(packet PacketWriter) {
 // Modify NewFastAudioSocket to accept a debug parameter
 func NewFastAudioSocket(conn net.Conn, debug bool, ctx context.Context, monitorEnabled bool) (*FastAudioSocket, error) {
 	s := &FastAudioSocket{
-		conn:         conn,
-		debug:        debug,
-		AudioChan:    make(chan PacketReader),
 		ctx:          ctx,
+		conn:         conn,
+		AudioChan:    make(chan PacketReader),
 		chunkCounter: int32(0),
+		MonitorChan:  make(chan MonitorResponse),
+		debug:        debug,
 	}
 
 	uuid, err := s.readUUID()
