@@ -8,6 +8,7 @@ import (
 	"net"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -39,6 +40,12 @@ type PacketReader struct {
 	Payload []byte
 }
 
+type MonitorResponse struct {
+	Message        string
+	ChunkCounter   int32
+	ExpectedChunks int32
+}
+
 func getSilentPacket() []byte {
 	onceSilentPacket.Do(func() {
 		silentPacket = make([]byte, MaxPacketSize)
@@ -54,10 +61,13 @@ func getSilentPacket() []byte {
 }
 
 type FastAudioSocket struct {
-	conn      net.Conn
-	uuid      string
-	debug     bool
-	audioChan chan PacketReader
+	conn         net.Conn
+	uuid         string
+	debug        bool
+	audioChan    chan PacketReader
+	ctx          context.Context
+	chunkCounter int32
+	monitorChan  chan MonitorResponse
 }
 
 func (p *PacketWriter) toBytes() []byte {
@@ -83,11 +93,13 @@ func (s *FastAudioSocket) sendPacket(packet PacketWriter) {
 }
 
 // Modify NewFastAudioSocket to accept a debug parameter
-func NewFastAudioSocket(conn net.Conn, debug bool) (*FastAudioSocket, error) {
+func NewFastAudioSocket(conn net.Conn, debug bool, ctx context.Context) (*FastAudioSocket, error) {
 	s := &FastAudioSocket{
-		conn:      conn,
-		debug:     debug,
-		audioChan: make(chan PacketReader),
+		conn:         conn,
+		debug:        debug,
+		audioChan:    make(chan PacketReader),
+		ctx:          ctx,
+		chunkCounter: int32(0),
 	}
 
 	uuid, err := s.readUUID()
@@ -164,21 +176,16 @@ func (s *FastAudioSocket) readChunk() (PacketReader, error) {
 	}, nil
 }
 
-// StreamRead reads packets from the connection and sends them to the reader channel.
-func (s *FastAudioSocket) StreamRead(ctx context.Context, cancel context.CancelFunc) {
+// StreamRead reads audio packets from the connection and sends them to the audio channel.
+func (s *FastAudioSocket) StreamRead() {
 	if s.debug {
 		fmt.Println("-- StreamRead START --")
 		defer fmt.Println("-- StreamRead STOP --")
 	}
 
-	defer func() {
-		cancel()
-		close(s.audioChan)
-	}()
-
 	for {
 		select {
-		case <-ctx.Done():
+		case <-s.ctx.Done():
 			return
 		default:
 			packet, err := s.readChunk()
@@ -188,6 +195,7 @@ func (s *FastAudioSocket) StreamRead(ctx context.Context, cancel context.CancelF
 				}
 				return
 			}
+			atomic.AddInt32(&s.chunkCounter, 1)
 
 			if packet.Type != PacketTypePCM {
 				if s.debug {
@@ -201,7 +209,74 @@ func (s *FastAudioSocket) StreamRead(ctx context.Context, cancel context.CancelF
 	}
 }
 
-func (s *FastAudioSocket) StreamPCM8khz(audioData []byte) error {
+const chunksPerSecond = 50
+
+// Monitor the chunk counter
+func (s *FastAudioSocket) Monitor() {
+
+	if s.debug {
+		fmt.Println("-- Monitor START --")
+		defer fmt.Println("-- Monitor STOP --")
+	}
+
+	monitorInterval := 2 * time.Second
+	ticker := time.NewTicker(monitorInterval)
+	defer ticker.Stop()
+
+	lastCounter := int32(0)
+	chunksExpected := int32(chunksPerSecond * monitorInterval.Seconds())
+	intermitentFactor := 0.5
+	minimalIntermitentChunks := int32(chunksPerSecond * monitorInterval.Seconds() * intermitentFactor)
+
+	for {
+		select {
+		case <-s.ctx.Done():
+			return
+		case <-ticker.C:
+			if s.debug {
+				fmt.Printf("Chunk counter: %v\n", s.chunkCounter)
+			}
+			currentCounter := atomic.LoadInt32(&s.chunkCounter)
+			chunksReceived := currentCounter - lastCounter
+
+			switch {
+			case chunksReceived == chunksExpected:
+				s.monitorChan <- MonitorResponse{
+					Message:        "[Monitor] ✅ Expected chunks received",
+					ChunkCounter:   currentCounter,
+					ExpectedChunks: chunksExpected,
+				}
+			case chunksReceived < minimalIntermitentChunks:
+				s.monitorChan <- MonitorResponse{
+					Message:        "[Monitor] 🚨 Intermitent chunks received",
+					ChunkCounter:   currentCounter,
+					ExpectedChunks: chunksExpected,
+				}
+			case chunksReceived == 0:
+				s.monitorChan <- MonitorResponse{
+					Message:        "[Monitor] 🚨 No chunks received",
+					ChunkCounter:   currentCounter,
+					ExpectedChunks: chunksExpected,
+				}
+			case chunksReceived > chunksExpected:
+				s.monitorChan <- MonitorResponse{
+					Message:        "[Monitor] ⚡ Too many chunks received",
+					ChunkCounter:   currentCounter,
+					ExpectedChunks: chunksExpected,
+				}
+			}
+
+			lastCounter = currentCounter
+		}
+	}
+}
+
+func (s *FastAudioSocket) StreamWritePCM8khz(audioData []byte) error {
+	if s.debug {
+		fmt.Println("-- StreamPCM8khz START --")
+		defer fmt.Println("-- StreamPCM8khz STOP --")
+	}
+
 	if len(audioData) < MaxPacketSize {
 		return fmt.Errorf("audio data is too short")
 	}
@@ -216,9 +291,12 @@ func (s *FastAudioSocket) StreamPCM8khz(audioData []byte) error {
 		ticker := time.NewTicker(20 * time.Millisecond)
 		defer ticker.Stop()
 
-		for range ticker.C {
+		for {
 			select {
-			case packet, ok := <-packetChan:
+			case <-s.ctx.Done():
+				return
+			case <-ticker.C:
+				packet, ok := <-packetChan
 				if !ok {
 					return
 				}
@@ -270,5 +348,7 @@ func (s *FastAudioSocket) Hangup() error {
 }
 
 func (s *FastAudioSocket) Close() error {
+	close(s.monitorChan)
+	close(s.audioChan)
 	return s.conn.Close()
 }
