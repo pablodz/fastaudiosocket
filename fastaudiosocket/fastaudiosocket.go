@@ -304,13 +304,12 @@ func (s *FastAudioSocket) StreamWritePCM8khz(audioData []byte) error {
 			select {
 			case <-s.ctx.Done():
 				return
-			case packet, ok := <-packetChan:
+			case <-ticker.C:
+				packet, ok := <-packetChan
 				if !ok {
 					return
 				}
 				s.sendPacket(packet)
-			case <-ticker.C:
-				continue
 			}
 		}
 	}()
