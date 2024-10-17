@@ -17,39 +17,39 @@ const (
 	PacketTypePCM       = 0x10
 	PacketTypeError     = 0xff
 	AudioChunkSize      = 320 // PCM audio chunk size in bytes (20ms of audio)
+	MaxHeaderSize       = 3   // Header size: Type (1 byte) + Length (2 bytes)
+	MaxAudioSize        = 320 // Maximum audio size in bytes
 )
 
-var emptyAudioPacketData = make([]byte, AudioChunkSize)
+var emptyAudioPacketData = make([]byte, AudioChunkSize) // Reusable empty packet.
 
-// Packet represents a network packet.
+// Packet represents a network packet with precomputed header.
 type Packet struct {
-	Type   byte
-	Length uint16
-	Data   []byte
+	Header [MaxHeaderSize]byte // Precomputed header (Type + Length).
+	Data   []byte              // Audio data.
 }
 
-// newPacket creates a new Packet instance.
-func newPacket(packetType byte, data []byte) Packet {
+// newPCM8khzPacket creates a pre-populated PCM packet for 8khz audio chunks.
+func newPCM8khzPacket(chunk []byte) Packet {
+	header := [MaxHeaderSize]byte{PacketTypePCM, 0x01, 0x40}
 	return Packet{
-		Type:   packetType,
-		Length: uint16(len(data)),
-		Data:   data,
+		Header: header,
+		Data:   chunk,
 	}
 }
 
-// toBytes serializes the packet into a byte slice.
+// toBytes serializes the packet by copying its header and data into a single buffer.
 func (p *Packet) toBytes() []byte {
-	buf := make([]byte, 3+len(p.Data))
-	buf[0] = p.Type
-	binary.BigEndian.PutUint16(buf[1:3], p.Length)
-	copy(buf[3:], p.Data)
+	buf := make([]byte, MaxHeaderSize+MaxAudioSize)
+	copy(buf[:MaxHeaderSize], p.Header[:])
+	copy(buf[MaxHeaderSize:], p.Data)
 	return buf
 }
 
 // FastAudioSocket represents the audio socket connection.
 type FastAudioSocket struct {
 	conn net.Conn
-	uuid [16]byte // Store the UUID from the first packet
+	uuid [16]byte // Store the UUID from the first packet.
 }
 
 // NewFastAudioSocket creates a new FastAudioSocket and captures the UUID from the first packet.
@@ -61,57 +61,44 @@ func NewFastAudioSocket(conn net.Conn) (*FastAudioSocket, error) {
 		return nil, fmt.Errorf("failed to read first packet: %w", err)
 	}
 
-	if packet.Type == PacketTypeUUID && len(packet.Data) == 16 {
-		copy(s.uuid[:], packet.Data)
-	} else {
-		return nil, fmt.Errorf("invalid UUID packet")
+	if len(packet.Data) != 16 {
+		return nil, fmt.Errorf("invalid or missing UUID packet")
 	}
+	copy(s.uuid[:], packet.Data)
 
 	return s, nil
 }
 
-// StreamPCM8khz streams PCM audio data with precise packet structure.
+// StreamPCM8khz streams PCM audio data with optimized packet structure.
 func (s *FastAudioSocket) StreamPCM8khz(audioData []byte, debug bool) error {
 	if len(audioData) == 0 {
 		return fmt.Errorf("no audio data to stream")
 	}
 
-	packetChan := make(chan Packet)
+	packetChan := make(chan Packet, 100) // Buffered channel to avoid blocking.
 	var wg sync.WaitGroup
 
-	// Goroutine for timed packet sending
+	// Goroutine for timed packet sending.
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		ticker := time.NewTicker(20 * time.Millisecond)
 		defer ticker.Stop()
 
-		for range ticker.C {
+		for {
 			select {
 			case packet, ok := <-packetChan:
 				if !ok {
-					return // Channel closed, exit goroutine
+					return // Channel closed, exit the goroutine.
 				}
-
-				if debug {
-					fmt.Printf("Sending packet: Type=%v, Length=%v\n", packet.Type, packet.Length)
-				}
-
-				if _, err := s.conn.Write(packet.toBytes()); err != nil {
-					if strings.HasSuffix(err.Error(), "broken pipe") {
-						return
-					}
-					if debug {
-						fmt.Printf("Failed to write packet: %v\n", err)
-					}
-					fmt.Printf("Error writing PCM data: %v\n", err)
-					return
-				}
+				s.sendPacket(packet, debug)
+			case <-ticker.C:
+				// Heartbeat to maintain tick rate even if no packets are ready.
 			}
 		}
 	}()
 
-	// Send audio data in chunks
+	// Send audio data in chunks.
 	for i := 0; i < len(audioData); i += AudioChunkSize {
 		end := i + AudioChunkSize
 		if end > len(audioData) {
@@ -119,15 +106,13 @@ func (s *FastAudioSocket) StreamPCM8khz(audioData []byte, debug bool) error {
 		}
 
 		chunk := audioData[i:end]
-
-		// Pad the chunk if it's smaller than AudioChunkSize
 		if len(chunk) < AudioChunkSize {
-			chunk = append(chunk, make([]byte, AudioChunkSize-len(chunk))...)
+			chunk = padChunk(chunk)
 		}
 
-		packet := newPacket(PacketTypePCM, chunk)
+		packet := newPCM8khzPacket(chunk)
 
-		// Skip empty or incorrect packets
+		// Skip empty packets.
 		if bytes.Equal(packet.Data, emptyAudioPacketData) {
 			continue
 		}
@@ -135,16 +120,38 @@ func (s *FastAudioSocket) StreamPCM8khz(audioData []byte, debug bool) error {
 		packetChan <- packet
 	}
 
-	close(packetChan) // Close channel after sending all data
-	wg.Wait()         // Wait for goroutine to finish
+	close(packetChan) // Close the channel after sending all data.
+	wg.Wait()         // Wait for the goroutine to finish.
 
 	return nil
 }
 
+// sendPacket sends a packet through the connection.
+func (s *FastAudioSocket) sendPacket(packet Packet, debug bool) {
+	if debug {
+		fmt.Printf("Sending packet: Type=%v, Length=%v\n", packet.Header[0], binary.BigEndian.Uint16(packet.Header[1:]))
+	}
+
+	if _, err := s.conn.Write(packet.toBytes()); err != nil {
+		if strings.HasSuffix(err.Error(), "broken pipe") {
+			return
+		}
+		if debug {
+			fmt.Printf("Failed to write packet: %v\n", err)
+		}
+	}
+}
+
+// padChunk pads a chunk to the required AudioChunkSize.
+func padChunk(chunk []byte) []byte {
+	padding := make([]byte, AudioChunkSize-len(chunk))
+	return append(chunk, padding...)
+}
+
 // ReadPacket reads a packet from the connection.
 func (s *FastAudioSocket) ReadPacket() (Packet, error) {
-	header := make([]byte, 3)
-	if _, err := s.conn.Read(header); err != nil {
+	header := make([]byte, MaxHeaderSize)
+	if err := s.readFull(header); err != nil {
 		return Packet{}, err
 	}
 
@@ -156,25 +163,31 @@ func (s *FastAudioSocket) ReadPacket() (Packet, error) {
 	}
 
 	payload := make([]byte, payloadLength)
-	if _, err := s.conn.Read(payload); err != nil {
+	if err := s.readFull(payload); err != nil {
 		return Packet{}, err
 	}
 
 	return Packet{
-		Type:   packetType,
-		Length: payloadLength,
+		Header: [MaxHeaderSize]byte{packetType, header[1], header[2]},
 		Data:   payload,
 	}, nil
 }
 
-// GetUUID returns the stored UUID if set.
+// readFull ensures all expected bytes are read.
+func (s *FastAudioSocket) readFull(buf []byte) error {
+	_, err := s.conn.Read(buf)
+	return err
+}
+
+// GetUUID returns the stored UUID.
 func (s *FastAudioSocket) GetUUID() [16]byte {
 	return s.uuid
 }
 
 // Terminate sends a termination packet.
 func (s *FastAudioSocket) Terminate() error {
-	packet := newPacket(PacketTypeTerminate, nil)
+	packet := newPCM8khzPacket(nil) // Create a termination packet.
+	packet.Header[0] = PacketTypeTerminate
 	_, err := s.conn.Write(packet.toBytes())
 	return err
 }
