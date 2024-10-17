@@ -41,9 +41,9 @@ type PacketReader struct {
 }
 
 type MonitorResponse struct {
-	Message        string
-	ChunkCounter   int32
-	ExpectedChunks int32
+	Message              string
+	ChunkCounterReceived int32
+	ExpectedChunks       int32
 }
 
 func getSilentPacket() []byte {
@@ -247,27 +247,27 @@ func (s *FastAudioSocket) monitor() {
 			switch {
 			case chunksReceived == chunksExpected:
 				s.MonitorChan <- MonitorResponse{
-					Message:        "[Monitor] ✅ Expected chunks received",
-					ChunkCounter:   currentCounter,
-					ExpectedChunks: chunksExpected,
+					Message:              "[Monitor] ✅ Expected chunks received",
+					ChunkCounterReceived: chunksReceived,
+					ExpectedChunks:       chunksExpected,
 				}
 			case chunksReceived < minimalIntermitentChunks:
 				s.MonitorChan <- MonitorResponse{
-					Message:        "[Monitor] 🚨 Intermitent chunks received",
-					ChunkCounter:   currentCounter,
-					ExpectedChunks: chunksExpected,
+					Message:              "[Monitor] 🚨 Intermitent chunks received",
+					ChunkCounterReceived: chunksReceived,
+					ExpectedChunks:       chunksExpected,
 				}
 			case chunksReceived == 0:
 				s.MonitorChan <- MonitorResponse{
-					Message:        "[Monitor] 🚨 No chunks received",
-					ChunkCounter:   currentCounter,
-					ExpectedChunks: chunksExpected,
+					Message:              "[Monitor] 🚨 No chunks received",
+					ChunkCounterReceived: chunksReceived,
+					ExpectedChunks:       chunksExpected,
 				}
 			case chunksReceived > chunksExpected:
 				s.MonitorChan <- MonitorResponse{
-					Message:        "[Monitor] ⚡ Too many chunks received",
-					ChunkCounter:   currentCounter,
-					ExpectedChunks: chunksExpected,
+					Message:              "[Monitor] ⚡ Too many chunks received",
+					ChunkCounterReceived: chunksReceived,
+					ExpectedChunks:       chunksExpected,
 				}
 			}
 
