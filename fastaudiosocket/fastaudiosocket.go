@@ -2,6 +2,7 @@ package fastaudiosocket
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"fmt"
 	"net"
@@ -52,6 +53,13 @@ func getSilentPacket() []byte {
 	return silentPacket
 }
 
+type FastAudioSocket struct {
+	conn       net.Conn
+	uuid       string
+	debug      bool
+	readerChan chan PacketReader
+}
+
 func (p *PacketWriter) toBytes() []byte {
 	packetBuffer := make([]byte, MaxPacketSize)
 	copy(packetBuffer[:HeaderSize], p.Header[:])
@@ -74,15 +82,13 @@ func (s *FastAudioSocket) sendPacket(packet PacketWriter) {
 	}
 }
 
-type FastAudioSocket struct {
-	conn  net.Conn
-	uuid  string
-	debug bool
-}
-
 // Modify NewFastAudioSocket to accept a debug parameter
 func NewFastAudioSocket(conn net.Conn, debug bool) (*FastAudioSocket, error) {
-	s := &FastAudioSocket{conn: conn, debug: debug}
+	s := &FastAudioSocket{
+		conn:       conn,
+		debug:      debug,
+		readerChan: make(chan PacketReader),
+	}
 
 	uuid, err := s.readUUID()
 	if err != nil {
@@ -123,7 +129,7 @@ func (s *FastAudioSocket) readUUID() (uuid.UUID, error) {
 	return uuid.FromBytes(payload)
 }
 
-func (s *FastAudioSocket) ReadChunks() (PacketReader, error) {
+func (s *FastAudioSocket) readChunk() (PacketReader, error) {
 	header := make([]byte, HeaderSize)
 	if _, err := s.conn.Read(header); err != nil {
 		return PacketReader{}, err
@@ -156,6 +162,36 @@ func (s *FastAudioSocket) ReadChunks() (PacketReader, error) {
 		Length:  payloadLength,
 		Payload: payload,
 	}, nil
+}
+
+// StreamRead reads packets from the connection and sends them to the reader channel.
+func (s *FastAudioSocket) StreamRead(ctx context.Context, cancel context.CancelFunc) {
+	if s.debug {
+		fmt.Println("-- StreamRead START --")
+		defer fmt.Println("-- StreamRead STOP --")
+	}
+
+	defer func() {
+		cancel()
+		close(s.readerChan)
+	}()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+			packet, err := s.readChunk()
+			if err != nil {
+				if s.debug {
+					fmt.Printf("Failed to read packet: %v\n", err)
+				}
+				return
+			}
+
+			s.readerChan <- packet
+		}
+	}
 }
 
 func (s *FastAudioSocket) StreamPCM8khz(audioData []byte) error {
