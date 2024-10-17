@@ -13,23 +13,19 @@ import (
 )
 
 const (
-	PacketTypeTerminate = 0x00
-	PacketTypeUUID      = 0x01
-	PacketTypePCM       = 0x10
-	PacketTypeError     = 0xff
-	AudioChunkSize      = 320 // PCM audio chunk size (20ms of audio)
-	HeaderSize          = 3   // Header: Type (1 byte) + Length (2 bytes)
-	MaxPacketSize       = 323
+	PacketTypeHangup = 0x00
+	PacketTypeUUID   = 0x01
+	PacketTypePCM    = 0x10
+	PacketTypeError  = 0xff
+	WriteChunkSize   = 320 // PCM audio chunk size (20ms of audio)
+	HeaderSize       = 3   // Header: Type (1 byte) + Length (2 bytes)
+	MaxPacketSize    = 323
 )
 
 var (
-	emptyAudioPacketData = make([]byte, AudioChunkSize)
-	packetPool           = sync.Pool{
-		New: func() interface{} {
-			return make([]byte, MaxPacketSize)
-		},
-	}
-	writingHeader = [3]byte{PacketTypePCM, 0x01, 0x40}
+	onceSilentPacket sync.Once
+	silentPacket     []byte
+	writingHeader    = [3]byte{PacketTypePCM, 0x01, 0x40}
 )
 
 type PacketWriter struct {
@@ -42,24 +38,35 @@ type PacketReader struct {
 	Payload []byte
 }
 
+func getSilentPacket() []byte {
+	onceSilentPacket.Do(func() {
+		silentPacket = make([]byte, MaxPacketSize)
+		silentPacket[0] = PacketTypePCM
+		silentPacket[1] = 0x01
+		silentPacket[2] = 0x40
+		for i := 3; i < MaxPacketSize; i++ {
+			silentPacket[i] = 0xff // set 255 as silent packet
+		}
+	})
+
+	return silentPacket
+}
+
 func newPCM8khzPacket(chunk []byte) PacketWriter {
 	return PacketWriter{Header: writingHeader, Payload: chunk}
 }
 
 func (p *PacketWriter) toBytes() []byte {
-	packetBuffer := packetPool.Get().([]byte)
-	defer packetPool.Put(packetBuffer) // Ensure the buffer is returned to the pool
-
+	packetBuffer := make([]byte, MaxPacketSize)
 	copy(packetBuffer[:HeaderSize], p.Header[:])
 	copy(packetBuffer[HeaderSize:], p.Payload)
-
 	return packetBuffer[:MaxPacketSize]
 }
 
 func (s *FastAudioSocket) sendPacket(packet PacketWriter) {
 	serialized := packet.toBytes()
 	if s.debug {
-		fmt.Printf(">>> Sending packet: Type=%#x, Length=%v, Payload: %v\n", packet.Header[0], len(packet.Payload), serialized)
+		fmt.Printf(">>> Sending packet: Type=%#x, Length=%v\n", packet.Header[0], len(packet.Payload))
 	}
 	if _, err := s.conn.Write(serialized); err != nil {
 		if strings.HasSuffix(err.Error(), "broken pipe") {
@@ -73,28 +80,75 @@ func (s *FastAudioSocket) sendPacket(packet PacketWriter) {
 
 type FastAudioSocket struct {
 	conn  net.Conn
-	uuid  [16]byte
+	uuid  string
 	debug bool
 }
 
 // Modify NewFastAudioSocket to accept a debug parameter
 func NewFastAudioSocket(conn net.Conn, debug bool) (*FastAudioSocket, error) {
 	s := &FastAudioSocket{conn: conn, debug: debug}
-	packet, err := s.ReadPacket()
+
+	uuid, err := s.readUUID()
 	if err != nil {
-		return nil, fmt.Errorf("failed to read first packet: %w", err)
+		return nil, fmt.Errorf("failed to read UUID: %w", err)
 	}
 
-	if packet.Type != PacketTypeUUID {
-		return nil, fmt.Errorf("expected UUID packet, got %#x", packet.Type)
-	}
+	s.uuid = uuid.String()
 
-	if len(packet.Payload) != 16 {
-		return nil, fmt.Errorf("invalid UUID packet")
-	}
-
-	copy(s.uuid[:], packet.Payload)
 	return s, nil
+}
+
+// Read first package as uuid from s.conn, dont use ReadPacket
+func (s *FastAudioSocket) readUUID() (uuid.UUID, error) {
+	header := make([]byte, HeaderSize)
+	if _, err := s.conn.Read(header); err != nil {
+		return uuid.Nil, err
+	}
+
+	packetType := header[0]
+	payloadLength := binary.BigEndian.Uint16(header[1:3])
+	payload := make([]byte, payloadLength)
+	if _, err := s.conn.Read(payload); err != nil {
+		return uuid.Nil, err
+	}
+
+	if s.debug {
+		fmt.Printf("<<< Received packet: Type=%#x, Length=%v, Payload: %v\n", packetType, payloadLength, payload)
+	}
+
+	if packetType != PacketTypeUUID {
+		return uuid.Nil, fmt.Errorf("expected UUID packet, got %#x", packetType)
+	}
+
+	if len(payload) != 16 {
+		return uuid.Nil, fmt.Errorf("invalid UUID packet")
+	}
+
+	return uuid.FromBytes(payload)
+}
+
+func (s *FastAudioSocket) ReadAudioChunks() (PacketReader, error) {
+	header := make([]byte, HeaderSize)
+	if _, err := s.conn.Read(header); err != nil {
+		return PacketReader{}, err
+	}
+
+	packetType := header[0]
+	payloadLength := binary.BigEndian.Uint16(header[1:3])
+	payload := make([]byte, payloadLength)
+	if _, err := s.conn.Read(payload); err != nil {
+		return PacketReader{}, err
+	}
+
+	if s.debug {
+		fmt.Printf("<<< Received packet: Type=%#x, Length=%v\n", packetType, payloadLength)
+	}
+
+	return PacketReader{
+		Type:    packetType,
+		Length:  payloadLength,
+		Payload: payload,
+	}, nil
 }
 
 func (s *FastAudioSocket) StreamPCM8khz(audioData []byte) error {
@@ -108,6 +162,7 @@ func (s *FastAudioSocket) StreamPCM8khz(audioData []byte) error {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
+
 		ticker := time.NewTicker(20 * time.Millisecond)
 		defer ticker.Stop()
 
@@ -124,18 +179,18 @@ func (s *FastAudioSocket) StreamPCM8khz(audioData []byte) error {
 		}
 	}()
 
-	for i := 0; i < len(audioData); i += AudioChunkSize {
-		end := i + AudioChunkSize
+	for i := 0; i < len(audioData); i += WriteChunkSize {
+		end := i + WriteChunkSize
 		if end > len(audioData) {
 			end = len(audioData)
 		}
 
 		chunk := audioData[i:end]
-		if len(chunk) < AudioChunkSize {
-			chunk = append(chunk, make([]byte, AudioChunkSize-len(chunk))...)
+		if len(chunk) < WriteChunkSize {
+			chunk = append(chunk, make([]byte, WriteChunkSize-len(chunk))...)
 		}
 
-		if bytes.Equal(chunk, emptyAudioPacketData) {
+		if bytes.Equal(chunk, getSilentPacket()) {
 			continue // Skip empty chunks.
 		}
 
@@ -149,36 +204,12 @@ func (s *FastAudioSocket) StreamPCM8khz(audioData []byte) error {
 	return nil
 }
 
-func (s *FastAudioSocket) ReadPacket() (PacketReader, error) {
-	header := make([]byte, HeaderSize)
-	if _, err := s.conn.Read(header); err != nil {
-		return PacketReader{}, err
-	}
-
-	packetType := header[0]
-	payloadLength := binary.BigEndian.Uint16(header[1:3])
-	payload := make([]byte, payloadLength)
-	if _, err := s.conn.Read(payload); err != nil {
-		return PacketReader{}, err
-	}
-
-	if s.debug {
-		fmt.Printf("<<< Received packet: Type=%#x, Length=%v, Payload: %v\n", packetType, payloadLength, payload)
-	}
-
-	return PacketReader{
-		Type:    packetType,
-		Length:  payloadLength,
-		Payload: payload,
-	}, nil
+func (s *FastAudioSocket) GetUUID() string {
+	return s.uuid
 }
 
-func (s *FastAudioSocket) GetUUID() (uuid.UUID, error) {
-	return uuid.FromBytes(s.uuid[:])
-}
-
-func (s *FastAudioSocket) Terminate() error {
-	command := []byte{PacketTypeTerminate, 0x00, 0x00}
+func (s *FastAudioSocket) Hangup() error {
+	command := []byte{PacketTypeHangup, 0x00, 0x00}
 	if _, err := s.conn.Write(command); err != nil {
 		return fmt.Errorf("failed to send termination packet: %w", err)
 	}
