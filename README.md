@@ -17,3 +17,7 @@ All packages sent by asterisk to audiosocket are read by the function `ReadPacka
 - Write packages
 
 All write packages are 320 bytes + 3 headers. The main difference here is that we need to handle from audiosocket server the timing to sent each packet (head+payload) to asterisk on each 20ms. Write only accepts 320 bytes of payload in pcm linear 16 format. (Remember to remove the headers if you are sending the chunk in streaming)
+
+## Examples
+
+Check the examples folder to see how to use the package.

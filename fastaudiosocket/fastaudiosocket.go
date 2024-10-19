@@ -17,7 +17,7 @@ import (
 const (
 	PacketTypeHangup = 0x00
 	PacketTypeUUID   = 0x01
-	PacketTypePCM    = 0x10
+	PacketTypeAudio  = 0x10
 	PacketTypeError  = 0xff
 	WriteChunkSize   = 320 // PCM audio chunk size (20ms of audio)
 	HeaderSize       = 3   // Header: Type (1 byte) + Length (2 bytes)
@@ -28,7 +28,7 @@ const (
 var (
 	onceSilentPacket sync.Once
 	silentPacket     []byte
-	writingHeader    = [3]byte{PacketTypePCM, 0x01, 0x40}
+	writingHeader    = [3]byte{PacketTypeAudio, 0x01, 0x40}
 )
 
 type PacketWriter struct {
@@ -49,7 +49,7 @@ type MonitorResponse struct {
 func getSilentPacket() []byte {
 	onceSilentPacket.Do(func() {
 		silentPacket = make([]byte, MaxPacketSize)
-		silentPacket[0] = PacketTypePCM
+		silentPacket[0] = PacketTypeAudio
 		silentPacket[1] = 0x01
 		silentPacket[2] = 0x40
 		for i := 3; i < MaxPacketSize; i++ {
@@ -148,7 +148,7 @@ func (s *FastAudioSocket) readChunk() (PacketReader, error) {
 	packetType := header[0]
 	payloadLength := binary.BigEndian.Uint16(header[1:3])
 
-	if packetType != PacketTypePCM {
+	if packetType != PacketTypeAudio {
 		return PacketReader{
 			Type:   packetType,
 			Length: payloadLength,
@@ -197,7 +197,7 @@ func (s *FastAudioSocket) streamRead(wg *sync.WaitGroup) {
 			}
 			atomic.AddInt32(&s.chunkCounter, 1)
 
-			if packet.Type != PacketTypePCM {
+			if packet.Type != PacketTypeAudio {
 				if s.debug {
 					fmt.Printf("Received packet with type %#x\n", packet.Type)
 				}
