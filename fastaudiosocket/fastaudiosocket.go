@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"net"
 	"strings"
@@ -288,6 +289,45 @@ func (s *FastAudioSocket) sendPacket(packet PacketWriter) {
 			fmt.Printf("Failed to write packet: %v\n", err)
 		}
 	}
+}
+
+func (s *FastAudioSocket) StreamWritePCM8khzWav(audioData []byte) error {
+	audioData, err := getframes(audioData)
+	if err != nil {
+		return fmt.Errorf("failed to get frames: %w", err)
+	}
+
+	err = s.StreamWritePCM8khz(audioData)
+	if err != nil {
+		return fmt.Errorf("failed to stream write: %w", err)
+	}
+
+	return nil
+}
+
+func getframes(wavContent []byte) ([]byte, error) {
+	if len(wavContent) < 44 {
+		return nil, errors.New("file too small")
+	}
+	if !bytes.HasPrefix(wavContent, []byte("RIFF")) || !bytes.HasPrefix(wavContent[8:], []byte("WAVE")) {
+		return nil, errors.New("not a valid WAV file")
+	}
+
+	dataChunkPos := bytes.Index(wavContent, []byte("data"))
+	if dataChunkPos == -1 {
+		return nil, errors.New("no data chunk found")
+	}
+
+	if len(wavContent) < dataChunkPos+8 {
+		return nil, errors.New("data chunk header too small")
+	}
+
+	dataSize := binary.LittleEndian.Uint32(wavContent[dataChunkPos+4 : dataChunkPos+8])
+	if dataChunkPos+8+int(dataSize) > len(wavContent) {
+		return nil, errors.New("data chunk size exceeds file length")
+	}
+
+	return wavContent[dataChunkPos+8 : dataChunkPos+8+int(dataSize)], nil
 }
 
 func (s *FastAudioSocket) StreamWritePCM8khz(audioData []byte) error {
