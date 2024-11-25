@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
-	"errors"
 	"fmt"
 	"net"
 	"strings"
@@ -291,111 +290,132 @@ func (s *FastAudioSocket) sendPacket(packet PacketWriter) {
 	}
 }
 
-func (s *FastAudioSocket) StreamWritePCM8khzWav(audioData []byte) error {
-	audioData, err := getframes(audioData)
-	if err != nil {
-		return fmt.Errorf("failed to get frames: %w", err)
-	}
-
-	err = s.StreamWritePCM8khz(audioData)
-	if err != nil {
-		return fmt.Errorf("failed to stream write: %w", err)
-	}
-
-	return nil
-}
-
-func getframes(wavContent []byte) ([]byte, error) {
-	if len(wavContent) < 44 {
-		return nil, errors.New("file too small")
-	}
-	if !bytes.HasPrefix(wavContent, []byte("RIFF")) || !bytes.HasPrefix(wavContent[8:], []byte("WAVE")) {
-		return nil, errors.New("not a valid WAV file")
-	}
-
-	dataChunkPos := bytes.Index(wavContent, []byte("data"))
-	if dataChunkPos == -1 {
-		return nil, errors.New("no data chunk found")
-	}
-
-	if len(wavContent) < dataChunkPos+8 {
-		return nil, errors.New("data chunk header too small")
-	}
-
-	dataSize := binary.LittleEndian.Uint32(wavContent[dataChunkPos+4 : dataChunkPos+8])
-	if dataChunkPos+8+int(dataSize) > len(wavContent) {
-		return nil, errors.New("data chunk size exceeds file length")
-	}
-
-	return wavContent[dataChunkPos+8 : dataChunkPos+8+int(dataSize)], nil
-}
-
-func (s *FastAudioSocket) StreamWritePCM8khz(audioData []byte) error {
+func (s *FastAudioSocket) Play(audioData []byte) error {
 	if s.debug {
-		fmt.Println("-- StreamWritePCM8khz START --")
-		defer fmt.Println("-- StreamWritePCM8khz STOP --")
+		fmt.Println("-- Play START --")
+		defer fmt.Println("-- Play STOP --")
 	}
 
 	if len(audioData) < MaxPacketSize {
-		return fmt.Errorf("audio data is too short")
+		return fmt.Errorf("audio data is too short: received %d bytes, need at least %d", len(audioData), MaxPacketSize)
 	}
 
 	packetChan := make(chan PacketWriter, 10)
-	var wg sync.WaitGroup
+	errorChan := make(chan error, 1)
 
-	wg.Add(1)
 	go func() {
-		defer wg.Done()
+		defer close(packetChan)
+		for i := 0; i < len(audioData); i += WriteChunkSize {
+			end := i + WriteChunkSize
+			if end > len(audioData) {
+				end = len(audioData)
+			}
 
-		ticker := time.NewTicker(20 * time.Millisecond)
-		defer ticker.Stop()
+			chunk := padChunkWithSilence(audioData[i:end])
 
-		for {
+			if bytes.Equal(chunk, getSilentPacket()) {
+				continue
+			}
+
+			packet := newPCM8khzPacket(chunk)
+
 			select {
+			case packetChan <- packet:
 			case <-s.ctx.Done():
+				errorChan <- s.ctx.Err()
 				return
-			case <-ticker.C:
-				packet, ok := <-packetChan
-				if !ok {
-					return
-				}
-				s.sendPacket(packet)
 			}
 		}
 	}()
 
-	for i := 0; i < len(audioData); i += WriteChunkSize {
-		end := i + WriteChunkSize
-		if end > len(audioData) {
-			end = len(audioData)
-		}
+	ticker := time.NewTicker(20 * time.Millisecond)
+	defer ticker.Stop()
 
-		chunk := audioData[i:end]
-
-		if len(chunk) < WriteChunkSize {
-			silence := getSilentPacket()[:WriteChunkSize-len(chunk)]
-			chunk = append(chunk, silence...)
-		}
-
-		if bytes.Equal(chunk, getSilentPacket()) {
-			continue
-		}
-
-		packet := newPCM8khzPacket(chunk)
-
+	for {
 		select {
-		case packetChan <- packet:
 		case <-s.ctx.Done():
-			close(packetChan)
-			wg.Wait()
 			return s.ctx.Err()
+		case err := <-errorChan:
+			if err != nil {
+				return err
+			}
+		case <-ticker.C:
+			packet, ok := <-packetChan
+			if !ok {
+				return nil
+			}
+			s.sendPacket(packet)
 		}
 	}
+}
 
-	close(packetChan)
-	wg.Wait()
+func (s *FastAudioSocket) PlayStreaming(dataChan chan []byte, errChan chan error) error {
+	if s.debug {
+		fmt.Println("-- PlayStreaming START --")
+		defer fmt.Println("-- PlayStreaming STOP --")
+	}
 
-	return nil
+	packetChan := make(chan PacketWriter, 10)
+
+	go func() {
+		defer close(packetChan)
+		for audioData := range dataChan {
+			if len(audioData) < MaxPacketSize {
+				errChan <- fmt.Errorf("audio data is too short: received %d bytes, need at least %d", len(audioData), MaxPacketSize)
+				return
+			}
+
+			for i := 0; i < len(audioData); i += WriteChunkSize {
+				end := i + WriteChunkSize
+				if end > len(audioData) {
+					end = len(audioData)
+				}
+
+				chunk := padChunkWithSilence(audioData[i:end])
+
+				if bytes.Equal(chunk, getSilentPacket()) {
+					continue
+				}
+
+				packet := newPCM8khzPacket(chunk)
+
+				select {
+				case packetChan <- packet:
+				case <-s.ctx.Done():
+					errChan <- s.ctx.Err()
+					return
+				}
+			}
+		}
+	}()
+
+	ticker := time.NewTicker(20 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-s.ctx.Done():
+			return s.ctx.Err()
+		case err := <-errChan:
+			if err != nil {
+				return err
+			}
+		case <-ticker.C:
+			packet, ok := <-packetChan
+			if !ok {
+				return nil
+			}
+			s.sendPacket(packet)
+		}
+	}
+}
+
+func padChunkWithSilence(chunk []byte) []byte {
+	if len(chunk) < WriteChunkSize {
+		silence := getSilentPacket()[:WriteChunkSize-len(chunk)]
+		return append(chunk, silence...)
+	}
+	return chunk
 }
 
 func newPCM8khzPacket(chunk []byte) PacketWriter {
