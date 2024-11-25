@@ -60,7 +60,7 @@ func getSilentPacket() []byte {
 }
 
 type FastAudioSocket struct {
-	ctx          context.Context
+	callCtx      context.Context
 	cancel       context.CancelFunc
 	conn         net.Conn
 	uuid         string
@@ -74,7 +74,7 @@ func NewFastAudioSocket(ctx context.Context, conn net.Conn, debug bool, monitorE
 	ctx, cancel := context.WithCancel(ctx)
 
 	s := &FastAudioSocket{
-		ctx:          ctx,
+		callCtx:      ctx,
 		cancel:       cancel,
 		conn:         conn,
 		AudioChan:    make(chan PacketReader),
@@ -185,7 +185,7 @@ func (s *FastAudioSocket) streamRead(wg *sync.WaitGroup) {
 
 	for {
 		select {
-		case <-s.ctx.Done():
+		case <-s.callCtx.Done():
 			return
 		default:
 			packet, err := s.readChunk()
@@ -227,7 +227,7 @@ func (s *FastAudioSocket) monitor(wg *sync.WaitGroup) {
 
 	for {
 		select {
-		case <-s.ctx.Done():
+		case <-s.callCtx.Done():
 			return
 		case <-ticker.C:
 			if s.debug {
@@ -290,7 +290,7 @@ func (s *FastAudioSocket) sendPacket(packet PacketWriter) {
 	}
 }
 
-func (s *FastAudioSocket) Play(audioData []byte) error {
+func (s *FastAudioSocket) Play(playerCtx context.Context, audioData []byte) error {
 	if s.debug {
 		fmt.Println("-- Play START --")
 		defer fmt.Println("-- Play STOP --")
@@ -321,8 +321,11 @@ func (s *FastAudioSocket) Play(audioData []byte) error {
 
 			select {
 			case packetChan <- packet:
-			case <-s.ctx.Done():
-				errorChan <- s.ctx.Err()
+			case <-playerCtx.Done():
+				errorChan <- playerCtx.Err()
+				return
+			case <-s.callCtx.Done():
+				errorChan <- s.callCtx.Err()
 				return
 			}
 		}
@@ -333,8 +336,10 @@ func (s *FastAudioSocket) Play(audioData []byte) error {
 
 	for {
 		select {
-		case <-s.ctx.Done():
-			return s.ctx.Err()
+		case <-playerCtx.Done():
+			return playerCtx.Err()
+		case <-s.callCtx.Done():
+			return s.callCtx.Err()
 		case err := <-errorChan:
 			if err != nil {
 				return err
@@ -349,7 +354,7 @@ func (s *FastAudioSocket) Play(audioData []byte) error {
 	}
 }
 
-func (s *FastAudioSocket) PlayStreaming(dataChan chan []byte, errChan chan error) error {
+func (s *FastAudioSocket) PlayStreaming(playerCtx context.Context, dataChan chan []byte, errChan chan error) error {
 	if s.debug {
 		fmt.Println("-- PlayStreaming START --")
 		defer fmt.Println("-- PlayStreaming STOP --")
@@ -381,8 +386,11 @@ func (s *FastAudioSocket) PlayStreaming(dataChan chan []byte, errChan chan error
 
 				select {
 				case packetChan <- packet:
-				case <-s.ctx.Done():
-					errChan <- s.ctx.Err()
+				case <-playerCtx.Done():
+					errChan <- playerCtx.Err()
+					return
+				case <-s.callCtx.Done():
+					errChan <- s.callCtx.Err()
 					return
 				}
 			}
@@ -394,8 +402,10 @@ func (s *FastAudioSocket) PlayStreaming(dataChan chan []byte, errChan chan error
 
 	for {
 		select {
-		case <-s.ctx.Done():
-			return s.ctx.Err()
+		case <-playerCtx.Done():
+			return playerCtx.Err()
+		case <-s.callCtx.Done():
+			return s.callCtx.Err()
 		case err := <-errChan:
 			if err != nil {
 				return err

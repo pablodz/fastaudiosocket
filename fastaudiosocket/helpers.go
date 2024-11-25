@@ -2,6 +2,7 @@ package fastaudiosocket
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -33,13 +34,13 @@ func getframes(wavContent []byte) ([]byte, error) {
 	return wavContent[dataChunkPos+8 : dataChunkPos+8+int(dataSize)], nil
 }
 
-func (s *FastAudioSocket) PlayWav(audioData []byte) error {
+func (s *FastAudioSocket) PlayWav(playerCtx context.Context, audioData []byte) error {
 	audioData, err := getframes(audioData)
 	if err != nil {
 		return fmt.Errorf("failed to get frames: %w", err)
 	}
 
-	err = s.Play(audioData)
+	err = s.Play(playerCtx, audioData)
 	if err != nil {
 		return fmt.Errorf("failed to stream write: %w", err)
 	}
@@ -56,7 +57,7 @@ func fileExists(filepath string) bool {
 	return !fileinfo.IsDir()
 }
 
-func (s *FastAudioSocket) PlayWavFile(filename string) error {
+func (s *FastAudioSocket) PlayWavFile(playerCtx context.Context, filename string) error {
 	if !fileExists(filename) {
 		return fmt.Errorf("file does not exist: %s", filename)
 	}
@@ -69,7 +70,7 @@ func (s *FastAudioSocket) PlayWavFile(filename string) error {
 		return fmt.Errorf("file is empty: %s", filename)
 	}
 
-	err = s.PlayWav(content)
+	err = s.PlayWav(playerCtx, content)
 	if err != nil {
 		return fmt.Errorf("failed to stream write wav: %w", err)
 	}
