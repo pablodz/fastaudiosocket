@@ -56,7 +56,7 @@ func fileExists(filepath string) bool {
 	return !fileinfo.IsDir()
 }
 
-func (s *FastAudioSocket) PlayFile(filename string) error {
+func (s *FastAudioSocket) PlayWavFile(filename string) error {
 	if !fileExists(filename) {
 		return fmt.Errorf("file does not exist: %s", filename)
 	}
