@@ -26,7 +26,7 @@ func main() {
 		case <-ctx.Done():
 			return
 
-		case rPacket, ok := <-fa.AudioChan:
+		case rPacket, ok := <-fa.PacketChan:
 			// AudioChan is the channel where the audio packets are received
 			if !ok {
 				return

@@ -25,6 +25,11 @@ const (
 	chunksPerSecond  = 50
 )
 
+const (
+	LenAudioPacketUlaw = 160
+	TickerUlaw8khz     = 20 * time.Millisecond
+)
+
 var (
 	onceSilentPacket sync.Once
 	silentPacket     []byte
@@ -36,9 +41,11 @@ type PacketWriter struct {
 	Payload []byte
 }
 type PacketReader struct {
-	Type    byte
-	Length  uint16
-	Payload []byte
+	SilenceSuppressed bool   // Silence suppression flag to avoid sending silence packets
+	Sequence          uint32 // Sequence number of the packet
+	Type              byte   // Type of the packet
+	Length            uint16 // Length of the payload
+	Payload           []byte // Payload of the packet
 }
 type MonitorResponse struct {
 	Message              string
@@ -64,6 +71,7 @@ type FastAudioSocket struct {
 	cancel       context.CancelFunc
 	conn         net.Conn
 	uuid         string
+	PacketChan   chan PacketReader
 	AudioChan    chan PacketReader
 	MonitorChan  chan MonitorResponse
 	chunkCounter int32
@@ -77,6 +85,7 @@ func NewFastAudioSocket(ctx context.Context, conn net.Conn, debug bool, monitorE
 		callCtx:      ctx,
 		cancel:       cancel,
 		conn:         conn,
+		PacketChan:   make(chan PacketReader),
 		AudioChan:    make(chan PacketReader),
 		MonitorChan:  make(chan MonitorResponse),
 		chunkCounter: int32(0),
@@ -103,7 +112,7 @@ func NewFastAudioSocket(ctx context.Context, conn net.Conn, debug bool, monitorE
 		if s.debug {
 			fmt.Println("Closing FastAudioSocket...")
 		}
-		close(s.AudioChan)
+		close(s.PacketChan)
 		close(s.MonitorChan)
 		s.conn.Close()
 	}()
@@ -183,28 +192,62 @@ func (s *FastAudioSocket) streamRead(wg *sync.WaitGroup) {
 
 	defer s.cancel()
 
+	go func() {
+		for {
+			select {
+			case <-s.callCtx.Done():
+				return
+			default:
+				packet, err := s.readChunk()
+				if err != nil {
+					if s.debug {
+						fmt.Printf("Failed to read packet: %v\n", err)
+					}
+					return
+				}
+				atomic.AddInt32(&s.chunkCounter, 1)
+
+				if packet.Type != PacketTypeAudio {
+					if s.debug {
+						fmt.Printf("Received packet with type %#x\n", packet.Type)
+					}
+					return
+				}
+
+				s.PacketChan <- packet
+			}
+		}
+	}()
+
+	// Send silence packets if no audio packets are received
+	// In some scenarios, silence suppression may be enabled
+	// on the other side, so we need to send silence packets
+	// to ensure that a package is received every 20ms
+	seqNumber := uint32(0)
+	chunkTicker := time.NewTicker(TickerUlaw8khz)
+	defer chunkTicker.Stop()
+	lastPacketReceived := true
 	for {
 		select {
 		case <-s.callCtx.Done():
 			return
-		default:
-			packet, err := s.readChunk()
-			if err != nil {
-				if s.debug {
-					fmt.Printf("Failed to read packet: %v\n", err)
+		case <-chunkTicker.C:
+			if !lastPacketReceived {
+				s.AudioChan <- PacketReader{
+					Sequence:          seqNumber,
+					SilenceSuppressed: true,
 				}
+				seqNumber++
+			}
+			lastPacketReceived = false
+		case p, ok := <-s.PacketChan:
+			if !ok {
 				return
 			}
-			atomic.AddInt32(&s.chunkCounter, 1)
-
-			if packet.Type != PacketTypeAudio {
-				if s.debug {
-					fmt.Printf("Received packet with type %#x\n", packet.Type)
-				}
-				return
-			}
-
-			s.AudioChan <- packet
+			p.Sequence = seqNumber
+			s.AudioChan <- p
+			lastPacketReceived = true
+			seqNumber++
 		}
 	}
 }
