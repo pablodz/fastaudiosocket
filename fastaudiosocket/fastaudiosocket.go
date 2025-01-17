@@ -151,36 +151,26 @@ func (s *FastAudioSocket) readUUID() (uuid.UUID, error) {
 func (s *FastAudioSocket) readChunk() (PacketReader, error) {
 	header := make([]byte, HeaderSize)
 	if _, err := s.conn.Read(header); err != nil {
-		return PacketReader{}, err
+		return PacketReader{Type: PacketTypeError}, fmt.Errorf("failed to read header: %w", err)
 	}
 
 	packetType := header[0]
 	payloadLength := binary.BigEndian.Uint16(header[1:3])
 
 	if packetType != PacketTypeAudio {
-		return PacketReader{
-			Type:   packetType,
-			Length: payloadLength,
-		}, nil
+		return PacketReader{Type: packetType, Length: payloadLength}, nil
 	}
 
 	payload := make([]byte, payloadLength)
 	if _, err := s.conn.Read(payload); err != nil {
-		return PacketReader{
-			Type:   packetType,
-			Length: payloadLength,
-		}, err
+		return PacketReader{Type: packetType, Length: payloadLength}, fmt.Errorf("failed to read payload: %w", err)
 	}
 
 	if s.debug {
 		fmt.Printf("<<< Received packet: Type=%#x, Length=%v\n", packetType, payloadLength)
 	}
 
-	return PacketReader{
-		Type:    packetType,
-		Length:  payloadLength,
-		Payload: payload,
-	}, nil
+	return PacketReader{Type: packetType, Length: payloadLength, Payload: payload}, nil
 }
 
 func (s *FastAudioSocket) streamRead(wg *sync.WaitGroup) {
@@ -203,6 +193,7 @@ func (s *FastAudioSocket) streamRead(wg *sync.WaitGroup) {
 					if s.debug {
 						fmt.Printf("Failed to read packet: %v\n", err)
 					}
+					s.PacketChan <- PacketReader{Type: PacketTypeError}
 					return
 				}
 				atomic.AddInt32(&s.chunkCounter, 1)
@@ -233,10 +224,7 @@ func (s *FastAudioSocket) streamRead(wg *sync.WaitGroup) {
 			return
 		case <-chunkTicker.C:
 			if !lastPacketReceived {
-				s.AudioChan <- PacketReader{
-					Sequence:          seqNumber,
-					SilenceSuppressed: true,
-				}
+				s.AudioChan <- PacketReader{Sequence: seqNumber, SilenceSuppressed: true}
 				seqNumber++
 			}
 			lastPacketReceived = false
