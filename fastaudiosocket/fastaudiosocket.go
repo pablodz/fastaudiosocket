@@ -183,6 +183,15 @@ func (s *FastAudioSocket) streamRead(wg *sync.WaitGroup) {
 	defer s.cancel()
 
 	go func() {
+		// recover from panic if the chunk reader is closed
+		defer func() {
+			if r := recover(); r != nil {
+				if s.debug {
+					fmt.Printf("Recovered in streamRead %x", r)
+				}
+			}
+		}()
+
 		for {
 			select {
 			case <-s.callCtx.Done():
@@ -194,10 +203,7 @@ func (s *FastAudioSocket) streamRead(wg *sync.WaitGroup) {
 						fmt.Printf("Failed to read packet: %v\n", err)
 					}
 
-					select {
-					case s.PacketChan <- PacketReader{Type: PacketTypeError}:
-					default:
-					}
+					s.PacketChan <- PacketReader{Type: PacketTypeError}
 					return
 				}
 				atomic.AddInt32(&s.chunkCounter, 1)
