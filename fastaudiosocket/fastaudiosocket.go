@@ -193,7 +193,11 @@ func (s *FastAudioSocket) streamRead(wg *sync.WaitGroup) {
 					if s.debug {
 						fmt.Printf("Failed to read packet: %v\n", err)
 					}
-					s.PacketChan <- PacketReader{Type: PacketTypeError}
+
+					select {
+					case s.PacketChan <- PacketReader{Type: PacketTypeError}:
+					default:
+					}
 					return
 				}
 				atomic.AddInt32(&s.chunkCounter, 1)
