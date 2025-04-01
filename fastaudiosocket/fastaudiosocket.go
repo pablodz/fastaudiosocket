@@ -53,6 +53,10 @@ type MonitorResponse struct {
 	ExpectedChunks       int32
 }
 
+// getSilentPacket generates a silent audio packet to be used when no audio is received.
+//
+// Returns:
+//   - A byte slice representing a silent audio packet.
 func getSilentPacket() []byte {
 	onceSilentPacket.Do(func() {
 		silentPacket = make([]byte, MaxPacketSize)
@@ -78,6 +82,17 @@ type FastAudioSocket struct {
 	debug        bool
 }
 
+// NewFastAudioSocket initializes a new FastAudioSocket instance.
+//
+// Parameters:
+//   - ctx: The context for managing the socket's lifecycle.
+//   - conn: The network connection for the audiosocket.
+//   - debug: Enables debug logging if true.
+//   - monitorEnabled: Enables monitoring if true.
+//
+// Returns:
+//   - A pointer to the FastAudioSocket instance.
+//   - An error if initialization fails.
 func NewFastAudioSocket(ctx context.Context, conn net.Conn, debug bool, monitorEnabled bool) (*FastAudioSocket, error) {
 	ctx, cancel := context.WithCancel(ctx)
 
@@ -120,6 +135,11 @@ func NewFastAudioSocket(ctx context.Context, conn net.Conn, debug bool, monitorE
 	return s, nil
 }
 
+// readUUID reads the UUID packet from the audiosocket connection.
+//
+// Returns:
+//   - A UUID object representing the call's unique identifier.
+//   - An error if the UUID cannot be read or is invalid.
 func (s *FastAudioSocket) readUUID() (uuid.UUID, error) {
 	header := make([]byte, HeaderSize)
 	if _, err := s.conn.Read(header); err != nil {
@@ -148,6 +168,11 @@ func (s *FastAudioSocket) readUUID() (uuid.UUID, error) {
 	return uuid.FromBytes(payload)
 }
 
+// readChunk reads a single audio packet from the audiosocket connection.
+//
+// Returns:
+//   - A PacketReader object containing the packet's data.
+//   - An error if the packet cannot be read.
 func (s *FastAudioSocket) readChunk() (PacketReader, error) {
 	header := make([]byte, HeaderSize)
 	if _, err := s.conn.Read(header); err != nil {
@@ -173,6 +198,10 @@ func (s *FastAudioSocket) readChunk() (PacketReader, error) {
 	return PacketReader{Type: packetType, Length: payloadLength, Payload: payload}, nil
 }
 
+// streamRead continuously reads audio packets from the connection and sends them to PacketChan.
+//
+// Parameters:
+//   - wg: A WaitGroup to signal when the function completes.
 func (s *FastAudioSocket) streamRead(wg *sync.WaitGroup) {
 	defer wg.Done()
 	if s.debug {
@@ -250,6 +279,10 @@ func (s *FastAudioSocket) streamRead(wg *sync.WaitGroup) {
 	}
 }
 
+// monitor periodically checks the connection's health and sends status updates to MonitorChan.
+//
+// Parameters:
+//   - wg: A WaitGroup to signal when the function completes.
 func (s *FastAudioSocket) monitor(wg *sync.WaitGroup) {
 	defer wg.Done()
 	if s.debug {
@@ -309,6 +342,10 @@ func (s *FastAudioSocket) monitor(wg *sync.WaitGroup) {
 	}
 }
 
+// toBytes serializes a PacketWriter into a byte slice.
+//
+// Returns:
+//   - A byte slice representing the serialized packet.
 func (p *PacketWriter) toBytes() []byte {
 	packetBuffer := make([]byte, MaxPacketSize)
 	copy(packetBuffer[:HeaderSize], p.Header[:])
@@ -316,6 +353,10 @@ func (p *PacketWriter) toBytes() []byte {
 	return packetBuffer[:MaxPacketSize]
 }
 
+// sendPacket sends a serialized packet to the audiosocket connection.
+//
+// Parameters:
+//   - packet: The PacketWriter object to be sent.
 func (s *FastAudioSocket) sendPacket(packet PacketWriter) {
 	serialized := packet.toBytes()
 	if s.debug {
@@ -331,6 +372,14 @@ func (s *FastAudioSocket) sendPacket(packet PacketWriter) {
 	}
 }
 
+// Play streams audio data to the audiosocket in 20ms chunks.
+//
+// Parameters:
+//   - playerCtx: The context for controlling the playback.
+//   - audioData: The byte slice containing the audio data.
+//
+// Returns:
+//   - An error if playback fails.
 func (s *FastAudioSocket) Play(playerCtx context.Context, audioData []byte) error {
 	if s.debug {
 		fmt.Println("-- Play START --")
@@ -395,6 +444,15 @@ func (s *FastAudioSocket) Play(playerCtx context.Context, audioData []byte) erro
 	}
 }
 
+// PlayStreaming streams audio data from a channel to the audiosocket.
+//
+// Parameters:
+//   - playerCtx: The context for controlling the playback.
+//   - dataChan: A channel providing audio data in chunks.
+//   - errChan: A channel for reporting errors.
+//
+// Returns:
+//   - An error if playback fails.
 func (s *FastAudioSocket) PlayStreaming(playerCtx context.Context, dataChan chan []byte, errChan chan error) error {
 	if s.debug {
 		fmt.Println("-- PlayStreaming START --")
@@ -461,6 +519,13 @@ func (s *FastAudioSocket) PlayStreaming(playerCtx context.Context, dataChan chan
 	}
 }
 
+// padChunkWithSilence pads an audio chunk with silence to match the required size.
+//
+// Parameters:
+//   - chunk: The audio chunk to be padded.
+//
+// Returns:
+//   - A byte slice containing the padded audio chunk.
 func padChunkWithSilence(chunk []byte) []byte {
 	if len(chunk) < WriteChunkSize {
 		silence := getSilentPacket()[:WriteChunkSize-len(chunk)]
@@ -469,14 +534,29 @@ func padChunkWithSilence(chunk []byte) []byte {
 	return chunk
 }
 
+// newPCM8khzPacket creates a new PCM audio packet with the given chunk.
+//
+// Parameters:
+//   - chunk: The audio chunk to be included in the packet.
+//
+// Returns:
+//   - A PacketWriter object representing the audio packet.
 func newPCM8khzPacket(chunk []byte) PacketWriter {
 	return PacketWriter{Header: writingHeader, Payload: chunk}
 }
 
+// GetUUID retrieves the UUID of the current audiosocket session.
+//
+// Returns:
+//   - A string representing the UUID.
 func (s *FastAudioSocket) GetUUID() string {
 	return s.uuid
 }
 
+// Hangup sends a termination packet to the audiosocket connection.
+//
+// Returns:
+//   - An error if the termination packet cannot be sent.
 func (s *FastAudioSocket) Hangup() error {
 	command := []byte{PacketTypeHangup, 0x00, 0x00}
 	if _, err := s.conn.Write(command); err != nil {

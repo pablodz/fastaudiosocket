@@ -9,6 +9,15 @@ import (
 	"os"
 )
 
+// getframes extracts the audio frames from a WAV file's content.
+// It validates the WAV file structure and returns the audio data.
+//
+// Parameters:
+//   - wavContent: The byte content of the WAV file.
+//
+// Returns:
+//   - A slice of bytes containing the audio frames.
+//   - An error if the WAV file is invalid or the data cannot be extracted.
 func getframes(wavContent []byte) ([]byte, error) {
 	if len(wavContent) < 44 {
 		return nil, errors.New("file too small")
@@ -34,6 +43,14 @@ func getframes(wavContent []byte) ([]byte, error) {
 	return wavContent[dataChunkPos+8 : dataChunkPos+8+int(dataSize)], nil
 }
 
+// PlayWav streams audio data extracted from a WAV file to the audiosocket.
+//
+// Parameters:
+//   - playerCtx: The context for controlling the playback.
+//   - audioData: The byte content of the WAV file.
+//
+// Returns:
+//   - An error if the playback fails.
 func (s *FastAudioSocket) PlayWav(playerCtx context.Context, audioData []byte) error {
 	audioData, err := getframes(audioData)
 	if err != nil {
@@ -48,6 +65,13 @@ func (s *FastAudioSocket) PlayWav(playerCtx context.Context, audioData []byte) e
 	return nil
 }
 
+// fileExists checks if a file exists at the given filepath.
+//
+// Parameters:
+//   - filepath: The path to the file.
+//
+// Returns:
+//   - True if the file exists and is not a directory, false otherwise.
 func fileExists(filepath string) bool {
 	fileinfo, err := os.Stat(filepath)
 	if os.IsNotExist(err) {
@@ -57,6 +81,14 @@ func fileExists(filepath string) bool {
 	return !fileinfo.IsDir()
 }
 
+// PlayWavFile reads a WAV file from the filesystem and streams its audio data.
+//
+// Parameters:
+//   - playerCtx: The context for controlling the playback.
+//   - filename: The path to the WAV file.
+//
+// Returns:
+//   - An error if the file does not exist, is invalid, or playback fails.
 func (s *FastAudioSocket) PlayWavFile(playerCtx context.Context, filename string) error {
 	if !fileExists(filename) {
 		return fmt.Errorf("file does not exist: %s", filename)
