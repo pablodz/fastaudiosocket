@@ -80,6 +80,7 @@ type FastAudioSocket struct {
 	MonitorChan  chan MonitorResponse
 	chunkCounter int32
 	debug        bool
+	closeOnce    sync.Once // Ensures Close is only executed once
 }
 
 // NewFastAudioSocket initializes a new FastAudioSocket instance.
@@ -202,14 +203,16 @@ func (s *FastAudioSocket) readChunk() (PacketReader, error) {
 //
 // This function cancels the context, closes all channels, and ensures the connection is closed.
 func (s *FastAudioSocket) Close() {
-	s.cancel()
-	close(s.PacketChan)
-	close(s.AudioChan)
-	close(s.MonitorChan)
-	s.conn.Close()
-	if s.debug {
-		fmt.Println("FastAudioSocket resources have been safely closed.")
-	}
+	s.closeOnce.Do(func() {
+		s.cancel()
+		close(s.PacketChan)
+		close(s.AudioChan)
+		close(s.MonitorChan)
+		s.conn.Close()
+		if s.debug {
+			fmt.Println("FastAudioSocket resources have been safely closed.")
+		}
+	})
 }
 
 // streamRead continuously reads audio packets from the connection and sends them to PacketChan.
