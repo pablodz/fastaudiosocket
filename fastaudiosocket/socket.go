@@ -100,9 +100,9 @@ func NewFastAudioSocket(ctx context.Context, conn net.Conn, debug bool, monitorE
 		callCtx:      ctx,
 		cancel:       cancel,
 		conn:         conn,
-		PacketChan:   make(chan PacketReader),
-		AudioChan:    make(chan PacketReader),
-		MonitorChan:  make(chan MonitorResponse),
+		PacketChan:   make(chan PacketReader, 10),
+		AudioChan:    make(chan PacketReader, 10),
+		MonitorChan:  make(chan MonitorResponse, 10),
 		chunkCounter: int32(0),
 		debug:        debug,
 	}
