@@ -253,9 +253,14 @@ func (s *FastAudioSocket) streamRead(wg *sync.WaitGroup) {
 				}
 
 				select {
-				case s.PacketChan <- packet:
 				case <-s.callCtx.Done():
 					return
+				default:
+					select {
+					case s.PacketChan <- packet:
+					case <-s.callCtx.Done():
+						return
+					}
 				}
 			}
 		}
@@ -272,9 +277,14 @@ func (s *FastAudioSocket) streamRead(wg *sync.WaitGroup) {
 		case <-chunkTicker.C:
 			if !lastPacketReceived {
 				select {
-				case s.AudioChan <- PacketReader{Sequence: seqNumber, SilenceSuppressed: true}:
 				case <-s.callCtx.Done():
 					return
+				default:
+					select {
+					case s.AudioChan <- PacketReader{Sequence: seqNumber, SilenceSuppressed: true}:
+					case <-s.callCtx.Done():
+						return
+					}
 				}
 				seqNumber++
 			}
@@ -285,9 +295,14 @@ func (s *FastAudioSocket) streamRead(wg *sync.WaitGroup) {
 			}
 			p.Sequence = seqNumber
 			select {
-			case s.AudioChan <- p:
 			case <-s.callCtx.Done():
 				return
+			default:
+				select {
+				case s.AudioChan <- p:
+				case <-s.callCtx.Done():
+					return
+				}
 			}
 			lastPacketReceived = true
 			seqNumber++
@@ -295,11 +310,17 @@ func (s *FastAudioSocket) streamRead(wg *sync.WaitGroup) {
 	}
 }
 
-// handlePacketError handles errors during packet reading by sending an error packet and closing resources.
+// handlePacketError handles errors during packet reading by sending an error packet and ensuring no further writes to closed channels.
 func (s *FastAudioSocket) handlePacketError() {
 	select {
-	case s.PacketChan <- PacketReader{Type: PacketTypeError}:
 	case <-s.callCtx.Done():
+		return
+	default:
+		select {
+		case s.PacketChan <- PacketReader{Type: PacketTypeError}:
+		case <-s.callCtx.Done():
+			return
+		}
 	}
 	s.Close()
 }
