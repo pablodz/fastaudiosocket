@@ -198,6 +198,20 @@ func (s *FastAudioSocket) readChunk() (PacketReader, error) {
 	return PacketReader{Type: packetType, Length: payloadLength, Payload: payload}, nil
 }
 
+// Close safely closes the FastAudioSocket, ensuring all resources are released.
+//
+// This function cancels the context, closes all channels, and ensures the connection is closed.
+func (s *FastAudioSocket) Close() {
+	s.cancel()
+	close(s.PacketChan)
+	close(s.AudioChan)
+	close(s.MonitorChan)
+	s.conn.Close()
+	if s.debug {
+		fmt.Println("FastAudioSocket resources have been safely closed.")
+	}
+}
+
 // streamRead continuously reads audio packets from the connection and sends them to PacketChan.
 //
 // Parameters:
@@ -209,15 +223,12 @@ func (s *FastAudioSocket) streamRead(wg *sync.WaitGroup) {
 		defer fmt.Println("-- StreamRead STOP --")
 	}
 
-	defer s.cancel()
+	defer s.Close() // Ensure resources are closed on exit.
 
 	go func() {
-		// recover from panic if the chunk reader is closed
 		defer func() {
-			if r := recover(); r != nil {
-				if s.debug {
-					fmt.Printf("Recovered in streamRead %x", r)
-				}
+			if r := recover(); r != nil && s.debug {
+				fmt.Printf("Recovered in streamRead: %v\n", r)
 			}
 		}()
 
@@ -231,28 +242,27 @@ func (s *FastAudioSocket) streamRead(wg *sync.WaitGroup) {
 					if s.debug {
 						fmt.Printf("Failed to read packet: %v\n", err)
 					}
-
-					s.PacketChan <- PacketReader{Type: PacketTypeError}
+					s.handlePacketError()
 					return
 				}
 				atomic.AddInt32(&s.chunkCounter, 1)
 
 				if packet.Type != PacketTypeAudio {
 					if s.debug {
-						fmt.Printf("Received packet with type %#x\n", packet.Type)
+						fmt.Printf("Received non-audio packet: Type=%#x\n", packet.Type)
 					}
-					return
+					continue
 				}
 
-				s.PacketChan <- packet
+				select {
+				case s.PacketChan <- packet:
+				case <-s.callCtx.Done():
+					return
+				}
 			}
 		}
 	}()
 
-	// Send silence packets if no audio packets are received
-	// In some scenarios, silence suppression may be enabled
-	// on the other side, so we need to send silence packets
-	// to ensure that a package is received every 20ms
 	seqNumber := uint32(0)
 	chunkTicker := time.NewTicker(TickerUlaw8khz)
 	defer chunkTicker.Stop()
@@ -263,7 +273,11 @@ func (s *FastAudioSocket) streamRead(wg *sync.WaitGroup) {
 			return
 		case <-chunkTicker.C:
 			if !lastPacketReceived {
-				s.AudioChan <- PacketReader{Sequence: seqNumber, SilenceSuppressed: true}
+				select {
+				case s.AudioChan <- PacketReader{Sequence: seqNumber, SilenceSuppressed: true}:
+				case <-s.callCtx.Done():
+					return
+				}
 				seqNumber++
 			}
 			lastPacketReceived = false
@@ -272,11 +286,24 @@ func (s *FastAudioSocket) streamRead(wg *sync.WaitGroup) {
 				return
 			}
 			p.Sequence = seqNumber
-			s.AudioChan <- p
+			select {
+			case s.AudioChan <- p:
+			case <-s.callCtx.Done():
+				return
+			}
 			lastPacketReceived = true
 			seqNumber++
 		}
 	}
+}
+
+// handlePacketError handles errors during packet reading by sending an error packet and closing resources.
+func (s *FastAudioSocket) handlePacketError() {
+	select {
+	case s.PacketChan <- PacketReader{Type: PacketTypeError}:
+	case <-s.callCtx.Done():
+	}
+	s.Close()
 }
 
 // monitor periodically checks the connection's health and sends status updates to MonitorChan.
@@ -296,45 +323,36 @@ func (s *FastAudioSocket) monitor(wg *sync.WaitGroup) {
 
 	lastCounter := int32(0)
 	chunksExpected := int32(chunksPerSecond * monitorInterval.Seconds())
-	intermitentFactor := 0.5
-	minimalIntermitentChunks := int32(chunksPerSecond * monitorInterval.Seconds() * intermitentFactor)
+	minimalIntermitentChunks := int32(float64(chunksExpected) * 0.5)
 
 	for {
 		select {
 		case <-s.callCtx.Done():
 			return
 		case <-ticker.C:
-			if s.debug {
-				fmt.Printf("Chunk counter: %v\n", s.chunkCounter)
-			}
 			currentCounter := atomic.LoadInt32(&s.chunkCounter)
 			chunksReceived := currentCounter - lastCounter
 
+			response := MonitorResponse{
+				ChunkCounterReceived: chunksReceived,
+				ExpectedChunks:       chunksExpected,
+			}
+
 			switch {
 			case chunksReceived == chunksExpected:
-				s.MonitorChan <- MonitorResponse{
-					Message:              "Monitor: ✅ Expected chunks received",
-					ChunkCounterReceived: chunksReceived,
-					ExpectedChunks:       chunksExpected,
-				}
+				response.Message = "Monitor: ✅ Expected chunks received"
 			case chunksReceived == 0:
-				s.MonitorChan <- MonitorResponse{
-					Message:              "Monitor: 🚨 No chunks received",
-					ChunkCounterReceived: chunksReceived,
-					ExpectedChunks:       chunksExpected,
-				}
+				response.Message = "Monitor: 🚨 No chunks received"
 			case chunksReceived < minimalIntermitentChunks:
-				s.MonitorChan <- MonitorResponse{
-					Message:              "Monitor: 🚨 Intermitent chunks received",
-					ChunkCounterReceived: chunksReceived,
-					ExpectedChunks:       chunksExpected,
-				}
+				response.Message = "Monitor: 🚨 Intermittent chunks received"
 			case chunksReceived > chunksExpected:
-				s.MonitorChan <- MonitorResponse{
-					Message:              "Monitor: ⚡ Too many chunks received",
-					ChunkCounterReceived: chunksReceived,
-					ExpectedChunks:       chunksExpected,
-				}
+				response.Message = "Monitor: ⚡ Too many chunks received"
+			}
+
+			select {
+			case s.MonitorChan <- response:
+			case <-s.callCtx.Done():
+				return
 			}
 
 			lastCounter = currentCounter
@@ -553,7 +571,7 @@ func (s *FastAudioSocket) GetUUID() string {
 	return s.uuid
 }
 
-// Hangup sends a termination packet to the audiosocket connection.
+// Hangup sends a termination packet to the audiosocket connection and closes resources.
 //
 // Returns:
 //   - An error if the termination packet cannot be sent.
@@ -562,5 +580,6 @@ func (s *FastAudioSocket) Hangup() error {
 	if _, err := s.conn.Write(command); err != nil {
 		return fmt.Errorf("failed to send termination packet: %w", err)
 	}
+	s.Close() // Ensure resources are closed after hangup.
 	return nil
 }
