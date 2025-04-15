@@ -125,12 +125,7 @@ func NewFastAudioSocket(ctx context.Context, conn net.Conn, debug bool, monitorE
 
 	go func() {
 		wg.Wait()
-		if s.debug {
-			fmt.Println("Closing FastAudioSocket...")
-		}
-		close(s.PacketChan)
-		close(s.MonitorChan)
-		s.conn.Close()
+		s.Close() // Ensure resources are safely closed.
 	}()
 
 	return s, nil
