@@ -196,7 +196,7 @@ func (s *FastAudioSocket) readChunk() (PacketReader, error) {
 
 		return PacketReader{Type: packetType, Length: payloadLength, Payload: payload}, nil
 	case PacketTypeDTMF:
-		payload := make([]byte, 1) // DTMF payload is 1 byte
+		payload := make([]byte, payloadLength) // DTMF payload is 1 byte
 		if _, err := s.conn.Read(payload); err != nil {
 			return PacketReader{Type: packetType, Length: payloadLength}, fmt.Errorf("failed to read DTMF payload: %w", err)
 		}
