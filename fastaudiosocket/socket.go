@@ -19,8 +19,9 @@ const (
 	PacketTypeUUID   = 0x01
 	PacketTypeAudio  = 0x10
 	PacketTypeError  = 0xff
-	WriteChunkSize   = 320 // PCM audio chunk size (20ms of audio)
-	HeaderSize       = 3   // Header: Type (1 byte) + Length (2 bytes)
+	PacketTypeDTMF   = 0x03 // New packet type for DTMF
+	WriteChunkSize   = 320  // PCM audio chunk size (20ms of audio)
+	HeaderSize       = 3    // Header: Type (1 byte) + Length (2 bytes)
 	MaxPacketSize    = 323
 	chunksPerSecond  = 50
 )
@@ -168,7 +169,7 @@ func (s *FastAudioSocket) readUUID() (uuid.UUID, error) {
 	return uuid.FromBytes(payload)
 }
 
-// readChunk reads a single audio packet from the audiosocket connection.
+// readChunk reads a single packet (audio or DTMF) from the audiosocket connection.
 //
 // Returns:
 //   - A PacketReader object containing the packet's data.
@@ -181,6 +182,19 @@ func (s *FastAudioSocket) readChunk() (PacketReader, error) {
 
 	packetType := header[0]
 	payloadLength := binary.BigEndian.Uint16(header[1:3])
+
+	if packetType == PacketTypeDTMF {
+		payload := make([]byte, 1) // DTMF payload is 1 byte
+		if _, err := s.conn.Read(payload); err != nil {
+			return PacketReader{Type: packetType, Length: payloadLength}, fmt.Errorf("failed to read DTMF payload: %w", err)
+		}
+
+		if s.debug {
+			fmt.Printf("<<< Received DTMF packet: Digit=%c\n", payload[0])
+		}
+
+		return PacketReader{Type: packetType, Length: payloadLength, Payload: payload}, nil
+	}
 
 	if packetType != PacketTypeAudio {
 		return PacketReader{Type: packetType, Length: payloadLength}, nil

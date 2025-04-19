@@ -1,4 +1,6 @@
-# fastaudiosocket
+# FastAudioSocket
+
+FastAudioSocket is a Go package for handling audio and DTMF packets over a custom audiosocket protocol.
 
 ## Install
 
@@ -7,6 +9,12 @@ A better way to manage audiosocket protocol.
 ```bash
 go get github.com/pablodz/fastaudiosocket
 ```
+
+## Requirements for DTMF support
+
+This package requires Asterisk versions released after **Mar 28, 2025**, as it depends on the changes introduced in the following commit:
+
+[Asterisk Commit a5bc39fa326b9936064d9ee81a5ec4678b97aa24](https://github.com/asterisk/asterisk/commit/a5bc39fa326b9936064d9ee81a5ec4678b97aa24)
 
 ## Info
 
