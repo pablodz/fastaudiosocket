@@ -47,7 +47,6 @@ type PacketReader struct {
 	Type              byte   // Type of the packet
 	Length            uint16 // Length of the payload
 	Payload           []byte // Payload of the packet
-	Digit             int    // DTMF digit (if applicable)
 }
 type MonitorResponse struct {
 	Message              string
@@ -184,7 +183,19 @@ func (s *FastAudioSocket) readChunk() (PacketReader, error) {
 	packetType := header[0]
 	payloadLength := binary.BigEndian.Uint16(header[1:3])
 
-	if packetType == PacketTypeDTMF {
+	switch packetType {
+	case PacketTypeAudio:
+		payload := make([]byte, payloadLength)
+		if _, err := s.conn.Read(payload); err != nil {
+			return PacketReader{Type: packetType, Length: payloadLength}, fmt.Errorf("failed to read payload: %w", err)
+		}
+
+		if s.debug {
+			fmt.Printf("<<< Received packet: Type=%#x, Length=%v\n", packetType, payloadLength)
+		}
+
+		return PacketReader{Type: packetType, Length: payloadLength, Payload: payload}, nil
+	case PacketTypeDTMF:
 		payload := make([]byte, 1) // DTMF payload is 1 byte
 		if _, err := s.conn.Read(payload); err != nil {
 			return PacketReader{Type: packetType, Length: payloadLength}, fmt.Errorf("failed to read DTMF payload: %w", err)
@@ -194,23 +205,15 @@ func (s *FastAudioSocket) readChunk() (PacketReader, error) {
 			fmt.Printf("<<< Received DTMF packet: Digit=%c\n", payload[0])
 		}
 
-		return PacketReader{Type: packetType, Length: payloadLength, Digit: int(payload[0])}, nil
+		return PacketReader{Type: packetType, Length: payloadLength, Payload: payload}, nil
+	default:
+		if s.debug {
+			fmt.Printf("<<< Received unknown packet: Type=%#x, Length=%v\n", packetType, payloadLength)
+		}
+		return PacketReader{Type: PacketTypeError}, fmt.Errorf("unknown packet type: %#x", packetType)
+
 	}
 
-	if packetType != PacketTypeAudio {
-		return PacketReader{Type: packetType, Length: payloadLength}, nil
-	}
-
-	payload := make([]byte, payloadLength)
-	if _, err := s.conn.Read(payload); err != nil {
-		return PacketReader{Type: packetType, Length: payloadLength}, fmt.Errorf("failed to read payload: %w", err)
-	}
-
-	if s.debug {
-		fmt.Printf("<<< Received packet: Type=%#x, Length=%v\n", packetType, payloadLength)
-	}
-
-	return PacketReader{Type: packetType, Length: payloadLength, Payload: payload}, nil
 }
 
 // streamRead continuously reads audio packets from the connection and sends them to PacketChan.
@@ -251,13 +254,6 @@ func (s *FastAudioSocket) streamRead(wg *sync.WaitGroup) {
 					return
 				}
 				atomic.AddInt32(&s.chunkCounter, 1)
-
-				if packet.Type != PacketTypeAudio {
-					if s.debug {
-						fmt.Printf("Received packet with type %#x\n", packet.Type)
-					}
-					return
-				}
 
 				s.PacketChan <- packet
 			}
