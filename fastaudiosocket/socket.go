@@ -47,6 +47,7 @@ type PacketReader struct {
 	Type              byte   // Type of the packet
 	Length            uint16 // Length of the payload
 	Payload           []byte // Payload of the packet
+	Digit             int    // DTMF digit (if applicable)
 }
 type MonitorResponse struct {
 	Message              string
@@ -193,7 +194,7 @@ func (s *FastAudioSocket) readChunk() (PacketReader, error) {
 			fmt.Printf("<<< Received DTMF packet: Digit=%c\n", payload[0])
 		}
 
-		return PacketReader{Type: packetType, Length: payloadLength, Payload: payload}, nil
+		return PacketReader{Type: packetType, Length: payloadLength, Digit: int(payload[0])}, nil
 	}
 
 	if packetType != PacketTypeAudio {
