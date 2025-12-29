@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"net"
 	"strings"
@@ -29,6 +30,11 @@ const (
 const (
 	LenAudioPacketUlaw = 160
 	TickerUlaw8khz     = 20 * time.Millisecond
+)
+
+// Sentinel errors
+var (
+	ErrFailedToReadUUID = errors.New("failed to read UUID")
 )
 
 var (
@@ -111,7 +117,7 @@ func NewFastAudioSocket(ctx context.Context, conn net.Conn, debug bool, monitorE
 	uuid, err := s.readUUID()
 	if err != nil {
 		cancel()
-		return nil, fmt.Errorf("failed to read UUID: %w", err)
+		return nil, fmt.Errorf("%w: %w", ErrFailedToReadUUID, err)
 	}
 	s.uuid = uuid.String()
 
