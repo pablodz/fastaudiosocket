@@ -45,7 +45,7 @@ func getframes(wavContent []byte) ([]byte, error) {
 			start := pos + 8
 			end := start + int(chunkSize)
 			if end > len(wavContent) {
-				// If the header claims more data than available, read until EOF
+				// If the header claims more data than available, read until EOF to be safe
 				return wavContent[start:], nil
 			}
 			return wavContent[start:end], nil
@@ -53,6 +53,12 @@ func getframes(wavContent []byte) ([]byte, error) {
 
 		// Move to next chunk
 		pos += 8 + int(chunkSize)
+
+		// FIX: RIFF chunks must be word-aligned (2 bytes).
+		// If the chunk size is odd, there is a padding byte that is NOT included in chunkSize.
+		if chunkSize%2 != 0 {
+			pos++
+		}
 	}
 
 	return nil, errors.New("data chunk not found")

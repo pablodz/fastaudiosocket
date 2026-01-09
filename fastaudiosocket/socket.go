@@ -169,7 +169,7 @@ func (s *FastAudioSocket) readChunk() (PacketReader, error) {
 	return PacketReader{Type: packetType, Length: payloadLength, Payload: payload}, nil
 }
 
-// streamRead continuously pulls data from the socket and manages the silence suppression logic to ensure a steady stream on AudioChan.
+// streamRead continuously pulls data from the socket and manages the silence suppression logic.
 func (s *FastAudioSocket) streamRead(wg *sync.WaitGroup) {
 	defer wg.Done()
 	defer s.cancel()
@@ -179,6 +179,7 @@ func (s *FastAudioSocket) streamRead(wg *sync.WaitGroup) {
 		defer fmt.Println("-- StreamRead STOP --")
 	}
 
+	// Goroutine to read from connection and push to PacketChan
 	go func() {
 		defer func() {
 			if r := recover(); r != nil && s.debug {
@@ -227,11 +228,19 @@ func (s *FastAudioSocket) streamRead(wg *sync.WaitGroup) {
 			if !ok {
 				return
 			}
+
+			p.Sequence = seqNumber
+
+			// ---------------------------------------------------------
+			// CRITICAL FIX: Send packet to AudioChan BEFORE checking type.
+			// This ensures PacketTypeError (Hangup) is sent to the user.
+			// ---------------------------------------------------------
+			s.AudioChan <- p
+
 			if p.Type == PacketTypeError {
 				return
 			}
-			p.Sequence = seqNumber
-			s.AudioChan <- p
+
 			lastPacketReceived = true
 			seqNumber++
 		}
@@ -330,9 +339,6 @@ func (s *FastAudioSocket) Play(playerCtx context.Context, audioData []byte) erro
 		} else {
 			chunk = audioData[i:end]
 		}
-
-		// Skip sending if it's pure silence (optional optimization, depends on requirements)
-		// For keep-alive purposes, usually better to send it.
 
 		select {
 		case <-playerCtx.Done():
