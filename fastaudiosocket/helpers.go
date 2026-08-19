@@ -74,6 +74,15 @@ func (s *FastAudioSocket) PlayWav(playerCtx context.Context, audioData []byte) e
 	return s.Play(playerCtx, rawFrames)
 }
 
+func (s *FastAudioSocket) PlayWavControlled(playerCtx context.Context, audioData []byte, control PlaybackControl) error {
+	rawFrames, err := getframes(audioData)
+	if err != nil {
+		return fmt.Errorf("failed to parse wav: %w", err)
+	}
+
+	return s.PlayControlled(playerCtx, rawFrames, control)
+}
+
 // fileExists checks if the path points to an existing file.
 func fileExists(filepath string) bool {
 	info, err := os.Stat(filepath)
