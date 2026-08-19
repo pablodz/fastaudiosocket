@@ -73,6 +73,11 @@ type FastAudioSocket struct {
 	debug        bool
 }
 
+type PlaybackControl interface {
+	Wait(context.Context) error
+	Played(time.Duration)
+}
+
 // NewFastAudioSocket initializes a new FastAudioSocket instance, performs the UUID handshake, and starts background listeners.
 func NewFastAudioSocket(ctx context.Context, conn net.Conn, debug bool, monitorEnabled bool) (*FastAudioSocket, error) {
 	ctx, cancel := context.WithCancel(ctx)
@@ -318,6 +323,10 @@ func (s *FastAudioSocket) sendPacket(packet PacketWriter) {
 
 // Play streams audio data synchronously using a ticker, avoiding unnecessary goroutines.
 func (s *FastAudioSocket) Play(playerCtx context.Context, audioData []byte) error {
+	return s.PlayControlled(playerCtx, audioData, nil)
+}
+
+func (s *FastAudioSocket) PlayControlled(playerCtx context.Context, audioData []byte, control PlaybackControl) error {
 	if s.debug {
 		fmt.Println("-- Play START --")
 		defer fmt.Println("-- Play STOP --")
@@ -331,6 +340,11 @@ func (s *FastAudioSocket) Play(playerCtx context.Context, audioData []byte) erro
 	defer ticker.Stop()
 
 	for i := 0; i < len(audioData); i += WriteChunkSize {
+		if control != nil {
+			if err := control.Wait(playerCtx); err != nil {
+				return err
+			}
+		}
 		end := i + WriteChunkSize
 		var chunk []byte
 
@@ -350,6 +364,9 @@ func (s *FastAudioSocket) Play(playerCtx context.Context, audioData []byte) erro
 				Header:  writingHeader,
 				Payload: chunk,
 			})
+			if control != nil {
+				control.Played(TickerInterval)
+			}
 		}
 	}
 	return nil
