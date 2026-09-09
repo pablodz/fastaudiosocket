@@ -17,6 +17,7 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"runtime/metrics"
 	"sort"
 	"strconv"
 	"strings"
@@ -45,6 +46,8 @@ var (
 	detail      = flag.Bool("details", false, "include individual call measurements on stdout")
 	load        = flag.Int("load", 0, "background CPU worker duty, percent of one sender core")
 	stall       = flag.Duration("stall", 0, "optional whole-sender SIGSTOP, once halfway through audio")
+	profileKind = flag.String("profile", "", "optional sender diagnostic: cpu, allocs, block, mutex, or trace; use separately from timing comparisons")
+	profilePath = flag.String("profile-output", "", "explicit diagnostic file path; no file is written by default")
 )
 
 func check(err error) {
@@ -189,19 +192,23 @@ type senderCall struct {
 	MaxDispatchMS  float64 `json:"max_dispatch_ms"`
 }
 type senderStats struct {
-	MajorFaults int64        `json:"major_faults"`
-	CPUAffinity string       `json:"cpu_affinity"`
-	CPUms       float64      `json:"cpu_ms"`
-	WallMS      float64      `json:"wall_ms"`
-	RSSKB       int64        `json:"rss_kb"`
-	PeakRSSKB   int64        `json:"peak_rss_kb"`
-	GCs         uint32       `json:"gc_cycles"`
-	GCPauseMS   float64      `json:"gc_pause_ms"`
-	Calls       []senderCall `json:"calls"`
+	AllocatedBytes uint64         `json:"allocated_bytes"`
+	Allocations    uint64         `json:"allocations"`
+	Scheduler      schedulerStats `json:"scheduler"`
+	MajorFaults    int64          `json:"major_faults"`
+	CPUAffinity    string         `json:"cpu_affinity"`
+	CPUms          float64        `json:"cpu_ms"`
+	WallMS         float64        `json:"wall_ms"`
+	RSSKB          int64          `json:"rss_kb"`
+	PeakRSSKB      int64          `json:"peak_rss_kb"`
+	GCs            uint32         `json:"gc_cycles"`
+	GCPauseMS      float64        `json:"gc_pause_ms"`
+	Calls          []senderCall   `json:"calls"`
 }
 
 func main() {
 	flag.Parse()
+	check(validateProfile(*profileKind, *profilePath))
 	if *calls < 1 || *duration < 20*time.Millisecond || *duration%(20*time.Millisecond) != 0 || *procs < 1 || *lead < 0 || *lead%(20*time.Millisecond) != 0 || *load < 0 || *load > 100 || *stall < 0 {
 		panic("invalid settings")
 	}
@@ -329,6 +336,8 @@ func runSender() {
 	if !scan.Scan() || scan.Text() != "start" {
 		panic("missing start")
 	}
+	stopProfile := startProfile(*profileKind, *profilePath)
+	defer stopProfile()
 	loadCtx, stopLoad := context.WithCancel(ctx)
 	loadDone := make(chan struct{})
 	go func() {
@@ -351,6 +360,7 @@ func runSender() {
 	}()
 	var before, after runtime.MemStats
 	runtime.ReadMemStats(&before)
+	schedBefore := schedulerSnapshot()
 	var usageBefore syscall.Rusage
 	check(syscall.Getrusage(syscall.RUSAGE_SELF, &usageBefore))
 	cpuStart := cpu()
@@ -371,6 +381,9 @@ func runSender() {
 	stopLoad()
 	<-loadDone
 	runtime.ReadMemStats(&after)
+	r.Scheduler = schedulerDelta(schedBefore, schedulerSnapshot())
+	r.AllocatedBytes = after.TotalAlloc - before.TotalAlloc
+	r.Allocations = after.Mallocs - before.Mallocs
 	r.GCs = after.NumGC - before.NumGC
 	r.GCPauseMS = float64(after.PauseTotalNs-before.PauseTotalNs) / 1e6
 	r.RSSKB = rss(os.Getpid())
@@ -380,6 +393,7 @@ func runSender() {
 	r.PeakRSSKB = max(usage.Maxrss, r.RSSKB)
 	r.CPUAffinity = affinity(os.Getpid())
 	fmt.Println("done")
+	stopProfile()
 	// Controller finishes inbound validation before allowing teardown.
 	if !scan.Scan() || scan.Text() != "stop" {
 		panic("missing stop")
@@ -658,7 +672,7 @@ func input(ctx context.Context, c *controllerCall, start <-chan struct{}, audio 
 func runController() {
 	frames := int(*duration / (20 * time.Millisecond))
 	audio := tone(frames)
-	args := []string{"-worker", "-calls", strconv.Itoa(*calls), "-duration", duration.String(), "-lead", lead.String(), "-procs", strconv.Itoa(*procs), "-load", strconv.Itoa(*load), "-aligned=" + strconv.FormatBool(*aligned), "-start-spread", startSpread.String()}
+	args := []string{"-worker", "-calls", strconv.Itoa(*calls), "-duration", duration.String(), "-lead", lead.String(), "-procs", strconv.Itoa(*procs), "-load", strconv.Itoa(*load), "-aligned=" + strconv.FormatBool(*aligned), "-start-spread", startSpread.String(), "-profile", *profileKind, "-profile-output", *profilePath}
 	cmd := exec.Command(os.Args[0], args...)
 	if *senderCPUs != "" {
 		cmd = exec.Command("taskset", append([]string{"-c", *senderCPUs, os.Args[0]}, args...)...)
@@ -841,6 +855,10 @@ func runController() {
 	summary["cgroup_throttled_periods"] = throttleAfter[0] - throttleBefore[0]
 	summary["cgroup_throttled_ms"] = float64(throttleAfter[1]-throttleBefore[1]) / 1000
 	summary["go_version"] = runtime.Version()
+	summary["profile"] = *profileKind
+	summary["sender_allocated_bytes"] = sender.AllocatedBytes
+	summary["sender_allocations"] = sender.Allocations
+	summary["sender_scheduler"] = sender.Scheduler
 	if *detail {
 		metrics := make([]callMetrics, len(connections))
 		for i := range connections {
@@ -850,6 +868,13 @@ func runController() {
 		summary["sender_per_call"] = sender.Calls
 	}
 	check(json.NewEncoder(os.Stdout).Encode(summary))
+}
+
+func schedulerSnapshot() metrics.Float64Histogram {
+	samples := []metrics.Sample{{Name: "/sched/latencies:seconds"}}
+	metrics.Read(samples)
+	h := samples[0].Value.Float64Histogram()
+	return metrics.Float64Histogram{Buckets: append([]float64(nil), h.Buckets...), Counts: append([]uint64(nil), h.Counts...)}
 }
 
 func summarize(connections []controllerCall, sender senderStats, frames int) map[string]any {
