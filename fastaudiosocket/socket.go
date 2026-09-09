@@ -336,8 +336,7 @@ func (s *FastAudioSocket) PlayControlled(playerCtx context.Context, audioData []
 		return nil
 	}
 
-	ticker := time.NewTicker(TickerInterval)
-	defer ticker.Stop()
+	pace := newPacer(TickerInterval)
 
 	for i := 0; i < len(audioData); i += WriteChunkSize {
 		if control != nil {
@@ -354,33 +353,33 @@ func (s *FastAudioSocket) PlayControlled(playerCtx context.Context, audioData []
 			chunk = audioData[i:end]
 		}
 
-		select {
-		case <-playerCtx.Done():
-			return playerCtx.Err()
-		case <-s.callCtx.Done():
-			return s.callCtx.Err()
-		case <-ticker.C:
-			s.sendPacket(PacketWriter{
-				Header:  writingHeader,
-				Payload: chunk,
-			})
-			if control != nil {
-				control.Played(TickerInterval)
-			}
+		if err := pace.wait(playerCtx, s.callCtx); err != nil {
+			return err
+		}
+
+		s.sendPacket(PacketWriter{
+			Header:  writingHeader,
+			Payload: chunk,
+		})
+		pace.advance()
+
+		if control != nil {
+			control.Played(TickerInterval)
 		}
 	}
 	return nil
 }
 
-// PlayStreaming reads from a data channel and streams to the socket.
+// PlayStreaming reads from a data channel and streams it to the socket as a
+// single realigned byte stream. The caller must close dataChan to flush the tail.
 func (s *FastAudioSocket) PlayStreaming(playerCtx context.Context, dataChan chan []byte, errChan chan error) error {
 	if s.debug {
 		fmt.Println("-- PlayStreaming START --")
 		defer fmt.Println("-- PlayStreaming STOP --")
 	}
 
-	ticker := time.NewTicker(TickerInterval)
-	defer ticker.Stop()
+	pace := newPacer(TickerInterval)
+	var carry []byte
 
 	for {
 		select {
@@ -390,34 +389,44 @@ func (s *FastAudioSocket) PlayStreaming(playerCtx context.Context, dataChan chan
 			return s.callCtx.Err()
 		case audioChunk, ok := <-dataChan:
 			if !ok {
-				return nil // Channel closed, playback finished
+				return s.flushTail(playerCtx, pace, carry)
 			}
 
-			// Handle chunks larger than WriteChunkSize by splitting them
-			for i := 0; i < len(audioChunk); i += WriteChunkSize {
-				end := i + WriteChunkSize
-				var finalChunk []byte
+			carry = append(carry, audioChunk...)
 
-				if end > len(audioChunk) {
-					finalChunk = padChunkWithSilence(audioChunk[i:])
-				} else {
-					finalChunk = audioChunk[i:end]
+			for len(carry) >= WriteChunkSize {
+				if err := pace.wait(playerCtx, s.callCtx); err != nil {
+					return err
 				}
 
-				select {
-				case <-playerCtx.Done():
-					return playerCtx.Err()
-				case <-s.callCtx.Done():
-					return s.callCtx.Err()
-				case <-ticker.C:
-					s.sendPacket(PacketWriter{
-						Header:  writingHeader,
-						Payload: finalChunk,
-					})
-				}
+				s.sendPacket(PacketWriter{
+					Header:  writingHeader,
+					Payload: carry[:WriteChunkSize],
+				})
+				pace.advance()
+
+				carry = carry[WriteChunkSize:]
 			}
 		}
 	}
+}
+
+func (s *FastAudioSocket) flushTail(playerCtx context.Context, pace *pacer, carry []byte) error {
+	if len(carry) == 0 {
+		return nil
+	}
+
+	if err := pace.wait(playerCtx, s.callCtx); err != nil {
+		return err
+	}
+
+	s.sendPacket(PacketWriter{
+		Header:  writingHeader,
+		Payload: padChunkWithSilence(carry),
+	})
+	pace.advance()
+
+	return nil
 }
 
 // padChunkWithSilence appends the silence payload to the chunk to reach the required block size.
