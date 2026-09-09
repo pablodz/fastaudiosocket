@@ -93,6 +93,19 @@ limits; all frames can arrive successfully while playback timing still fails.
 The Go source and tests are retained; full results and the temporary Asterisk
 lab recipe are in the report.
 
+The [performance follow-up](https://github.com/pablodz/fastaudiosocket/issues/8#issuecomment-5606613097)
+adds sender allocation and scheduler-delay measurements, plus optional CPU,
+allocation, blocking, mutex, and execution-trace profiles. Profiles require
+`-profile` and an explicit `-profile-output` path; collect them separately from
+timing comparisons. The harness now defaults to `-context-scope call` for
+independent call lifetimes. Use `-context-scope shared` to reproduce the shared
+cancellation context used by the earlier capacity experiments.
+
+Normal 320-byte outbound frame serialization reuses storage owned by the socket
+after each write returns. This reduces allocation work; incoming payloads retain
+their independent ownership. Measured improvements and unsuccessful experiments
+are recorded in the performance issue.
+
 Cancellation stops further writes and interrupts a blocked write/control wait.
 It cannot retract audio already handed to TCP, Asterisk, or the RTP receiver.
 At a 100 ms target, roughly that much audio can still be outstanding locally;
