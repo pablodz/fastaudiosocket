@@ -65,6 +65,8 @@ type FastAudioSocket struct {
 	callCtx         context.Context
 	cancel          context.CancelFunc
 	conn            net.Conn
+	readHeader      [HeaderSize]byte
+	writeFrame      [MaxPacketSize]byte
 	uuid            string
 	PacketChan      chan PacketReader
 	AudioChan       chan PacketReader
@@ -133,7 +135,7 @@ func NewFastAudioSocket(ctx context.Context, conn net.Conn, debug bool, monitorE
 
 // readUUID reads the initial handshake packet containing the call UUID.
 func (s *FastAudioSocket) readUUID() (uuid.UUID, error) {
-	header := make([]byte, HeaderSize)
+	header := s.readHeader[:]
 	if _, err := io.ReadFull(s.conn, header); err != nil {
 		return uuid.Nil, err
 	}
@@ -163,7 +165,7 @@ func (s *FastAudioSocket) readUUID() (uuid.UUID, error) {
 
 // readChunk reads a single frame from the socket, handling variable payload lengths dynamically.
 func (s *FastAudioSocket) readChunk() (PacketReader, error) {
-	header := make([]byte, HeaderSize)
+	header := s.readHeader[:]
 	if _, err := io.ReadFull(s.conn, header); err != nil {
 		return PacketReader{Type: PacketTypeError}, err
 	}
@@ -324,7 +326,16 @@ func (p *PacketWriter) toBytes() []byte {
 
 // sendPacket reports failed and short writes; callers must not count them as audio.
 func (s *FastAudioSocket) sendPacket(packet PacketWriter) error {
-	serialized := packet.toBytes()
+	// Playback owns playbackMu until the write completes. net.Conn.Write must
+	// not retain this slice, so the next frame can reuse it after returning.
+	var serialized []byte
+	if len(packet.Payload) <= WriteChunkSize {
+		serialized = s.writeFrame[:HeaderSize+len(packet.Payload)]
+		copy(serialized, packet.Header[:])
+		copy(serialized[HeaderSize:], packet.Payload)
+	} else {
+		serialized = packet.toBytes()
+	}
 	n, err := s.conn.Write(serialized)
 	if n > 0 && n < len(serialized) {
 		// A partly written frame cannot be replaced by a new playback frame.
