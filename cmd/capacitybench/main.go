@@ -30,24 +30,25 @@ import (
 )
 
 var (
-	calls       = flag.Int("calls", 25, "simultaneous calls in one sender process")
-	duration    = flag.Duration("duration", 10*time.Second, "audio per call, multiple of 20ms")
-	lead        = flag.Duration("lead", 100*time.Millisecond, "playback lead; zero selects legacy deadlines")
-	procs       = flag.Int("procs", 2, "GOMAXPROCS of the shared sender")
-	senderCPUs  = flag.String("sender-cpus", "", "optional Linux CPU list for sender via taskset; keep controller on separate CPUs")
-	peer        = flag.String("peer", "tcp", "tcp or asterisk")
-	codec       = flag.String("codec", "ulaw", "Asterisk native channel codec: slin or ulaw")
-	config      = flag.String("asterisk-config", "/lab/config/asterisk.conf", "configuration of the isolated Asterisk lab")
-	astPID      = flag.Int("asterisk-pid", 0, "optional Asterisk PID for CPU/RSS measurements")
-	aligned     = flag.Bool("aligned", false, "synchronize all playback starts instead of spreading them over 20ms")
-	startSpread = flag.Duration("start-spread", 20*time.Millisecond, "spread audio starts over this interval; aligned overrides it")
-	duplex      = flag.Bool("duplex", true, "also send paced synthetic audio toward the library")
-	worker      = flag.Bool("worker", false, "internal shared sender subprocess")
-	detail      = flag.Bool("details", false, "include individual call measurements on stdout")
-	load        = flag.Int("load", 0, "background CPU worker duty, percent of one sender core")
-	stall       = flag.Duration("stall", 0, "optional whole-sender SIGSTOP, once halfway through audio")
-	profileKind = flag.String("profile", "", "optional sender diagnostic: cpu, allocs, block, mutex, or trace; use separately from timing comparisons")
-	profilePath = flag.String("profile-output", "", "explicit diagnostic file path; no file is written by default")
+	calls        = flag.Int("calls", 25, "simultaneous calls in one sender process")
+	duration     = flag.Duration("duration", 10*time.Second, "audio per call, multiple of 20ms")
+	lead         = flag.Duration("lead", 100*time.Millisecond, "playback lead; zero selects legacy deadlines")
+	procs        = flag.Int("procs", 2, "GOMAXPROCS of the shared sender")
+	senderCPUs   = flag.String("sender-cpus", "", "optional Linux CPU list for sender via taskset; keep controller on separate CPUs")
+	peer         = flag.String("peer", "tcp", "tcp or asterisk")
+	codec        = flag.String("codec", "ulaw", "Asterisk native channel codec: slin or ulaw")
+	config       = flag.String("asterisk-config", "/lab/config/asterisk.conf", "configuration of the isolated Asterisk lab")
+	astPID       = flag.Int("asterisk-pid", 0, "optional Asterisk PID for CPU/RSS measurements")
+	aligned      = flag.Bool("aligned", false, "synchronize all playback starts instead of spreading them over 20ms")
+	startSpread  = flag.Duration("start-spread", 20*time.Millisecond, "spread audio starts over this interval; aligned overrides it")
+	duplex       = flag.Bool("duplex", true, "also send paced synthetic audio toward the library")
+	worker       = flag.Bool("worker", false, "internal shared sender subprocess")
+	detail       = flag.Bool("details", false, "include individual call measurements on stdout")
+	load         = flag.Int("load", 0, "background CPU worker duty, percent of one sender core")
+	stall        = flag.Duration("stall", 0, "optional whole-sender SIGSTOP, once halfway through audio")
+	profileKind  = flag.String("profile", "", "optional sender diagnostic: cpu, allocs, block, mutex, or trace; use separately from timing comparisons")
+	profilePath  = flag.String("profile-output", "", "explicit diagnostic file path; no file is written by default")
+	contextScope = flag.String("context-scope", "call", "call gives each call its own cancellable context; shared reproduces the original harness")
 )
 
 func check(err error) {
@@ -209,6 +210,9 @@ type senderStats struct {
 func main() {
 	flag.Parse()
 	check(validateProfile(*profileKind, *profilePath))
+	if *contextScope != "call" && *contextScope != "shared" {
+		panic("context-scope must be call or shared")
+	}
 	if *calls < 1 || *duration < 20*time.Millisecond || *duration%(20*time.Millisecond) != 0 || *procs < 1 || *lead < 0 || *lead%(20*time.Millisecond) != 0 || *load < 0 || *load > 100 || *stall < 0 {
 		panic("invalid settings")
 	}
@@ -254,6 +258,15 @@ func runSender() {
 		go func(index int, conn net.Conn) {
 			defer wg.Done()
 			defer conn.Close()
+			// A shared Done channel in every playback/producer select introduces
+			// cross-call contention. Keep that mode for historical comparisons,
+			// but model independent call lifetimes by default.
+			ctx := ctx
+			if *contextScope == "call" {
+				var cancelCall context.CancelFunc
+				ctx, cancelCall = context.WithCancel(ctx)
+				defer cancelCall()
+			}
 			s, e := fa.NewFastAudioSocket(ctx, conn, false, false)
 			check(e)
 			// The controller encodes its call index in the UUID; accept order can vary.
@@ -672,7 +685,7 @@ func input(ctx context.Context, c *controllerCall, start <-chan struct{}, audio 
 func runController() {
 	frames := int(*duration / (20 * time.Millisecond))
 	audio := tone(frames)
-	args := []string{"-worker", "-calls", strconv.Itoa(*calls), "-duration", duration.String(), "-lead", lead.String(), "-procs", strconv.Itoa(*procs), "-load", strconv.Itoa(*load), "-aligned=" + strconv.FormatBool(*aligned), "-start-spread", startSpread.String(), "-profile", *profileKind, "-profile-output", *profilePath}
+	args := []string{"-worker", "-calls", strconv.Itoa(*calls), "-duration", duration.String(), "-lead", lead.String(), "-procs", strconv.Itoa(*procs), "-load", strconv.Itoa(*load), "-aligned=" + strconv.FormatBool(*aligned), "-start-spread", startSpread.String(), "-profile", *profileKind, "-profile-output", *profilePath, "-context-scope", *contextScope}
 	cmd := exec.Command(os.Args[0], args...)
 	if *senderCPUs != "" {
 		cmd = exec.Command("taskset", append([]string{"-c", *senderCPUs, os.Args[0]}, args...)...)
@@ -856,6 +869,7 @@ func runController() {
 	summary["cgroup_throttled_ms"] = float64(throttleAfter[1]-throttleBefore[1]) / 1000
 	summary["go_version"] = runtime.Version()
 	summary["profile"] = *profileKind
+	summary["context_scope"] = *contextScope
 	summary["sender_allocated_bytes"] = sender.AllocatedBytes
 	summary["sender_allocations"] = sender.Allocations
 	summary["sender_scheduler"] = sender.Scheduler
