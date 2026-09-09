@@ -74,13 +74,24 @@ setting `JITTERBUFFER()` on the AudioSocket channel did not smooth this path.
 See the [full benchmark report and Asterisk findings](https://github.com/pablodz/fastaudiosocket/issues/3#issuecomment-5600048776)
 before enabling lead for a deployment.
 
-The synthetic experiments covered 219 runs and 22,902 received audio frames,
+The single-stream experiments covered 219 runs and 22,902 received audio frames,
 with zero payload mismatch frames. At approximately 80% of one sender core,
 the mean modeled FIFO underrun was 30.29 ms with deadlines and 0 ms with a
 100 ms lead. Evaluate 100–120 ms when the receiver and interruption budget
 permit it; these short local measurements do not guarantee acoustic quality.
 The Go benchmark harness and tests are in `cmd/jitterbench`; the full tables,
 environment, and reproduction instructions are in the linked issue comment.
+
+For concurrent-call sizing, `cmd/capacitybench` runs bidirectional calls in one
+shared Go sender process and measures actual Asterisk RTP arrival times using
+kernel timestamps. The [capacity report](https://github.com/pablodz/fastaudiosocket/issues/3#issuecomment-5605932926)
+records 99 runs, including CPU affinity, runtime parallelism, memory limits,
+and scheduler-stall comparisons. Local transport reference points were 200 calls
+on two CPU threads and 400 on four, with a 4 GiB container limit. Validate the
+complete application on the intended hardware before using these as capacity
+limits; all frames can arrive successfully while playback timing still fails.
+The Go source and tests are retained; full results and the temporary Asterisk
+lab recipe are in the report.
 
 Cancellation stops further writes and interrupts a blocked write/control wait.
 It cannot retract audio already handed to TCP, Asterisk, or the RTP receiver.
