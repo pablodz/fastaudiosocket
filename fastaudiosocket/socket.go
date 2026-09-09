@@ -65,7 +65,6 @@ type FastAudioSocket struct {
 	callCtx         context.Context
 	cancel          context.CancelFunc
 	conn            net.Conn
-	readHeader      [HeaderSize]byte
 	writeFrame      [MaxPacketSize]byte
 	uuid            string
 	PacketChan      chan PacketReader
@@ -135,7 +134,7 @@ func NewFastAudioSocket(ctx context.Context, conn net.Conn, debug bool, monitorE
 
 // readUUID reads the initial handshake packet containing the call UUID.
 func (s *FastAudioSocket) readUUID() (uuid.UUID, error) {
-	header := s.readHeader[:]
+	header := make([]byte, HeaderSize)
 	if _, err := io.ReadFull(s.conn, header); err != nil {
 		return uuid.Nil, err
 	}
@@ -165,7 +164,7 @@ func (s *FastAudioSocket) readUUID() (uuid.UUID, error) {
 
 // readChunk reads a single frame from the socket, handling variable payload lengths dynamically.
 func (s *FastAudioSocket) readChunk() (PacketReader, error) {
-	header := s.readHeader[:]
+	header := make([]byte, HeaderSize)
 	if _, err := io.ReadFull(s.conn, header); err != nil {
 		return PacketReader{Type: PacketTypeError}, err
 	}
