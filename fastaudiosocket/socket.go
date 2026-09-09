@@ -5,8 +5,8 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
 	"net"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -62,25 +62,34 @@ type MonitorResponse struct {
 }
 
 type FastAudioSocket struct {
-	callCtx      context.Context
-	cancel       context.CancelFunc
-	conn         net.Conn
-	uuid         string
-	PacketChan   chan PacketReader
-	AudioChan    chan PacketReader
-	MonitorChan  chan MonitorResponse
-	chunkCounter int32
-	debug        bool
+	callCtx         context.Context
+	cancel          context.CancelFunc
+	conn            net.Conn
+	uuid            string
+	PacketChan      chan PacketReader
+	AudioChan       chan PacketReader
+	MonitorChan     chan MonitorResponse
+	chunkCounter    int32
+	debug           bool
+	playbackMu      sync.Mutex
+	playbackStateMu sync.Mutex
+	playbackOptions PlaybackOptions
+	playbackStats   PlaybackStats
+	playoutEnd      time.Time
 }
 
 type PlaybackControl interface {
 	Wait(context.Context) error
+	// Played reports audio successfully handed to the socket, including tail
+	// padding. It does not report wall time or confirmed audible playback.
 	Played(time.Duration)
 }
 
 // NewFastAudioSocket initializes a new FastAudioSocket instance, performs the UUID handshake, and starts background listeners.
 func NewFastAudioSocket(ctx context.Context, conn net.Conn, debug bool, monitorEnabled bool) (*FastAudioSocket, error) {
 	ctx, cancel := context.WithCancel(ctx)
+	// Closing the owned connection unblocks handshake and reader on cancellation.
+	context.AfterFunc(ctx, func() { _ = conn.Close() })
 
 	s := &FastAudioSocket{
 		callCtx:      ctx,
@@ -114,7 +123,7 @@ func NewFastAudioSocket(ctx context.Context, conn net.Conn, debug bool, monitorE
 		if s.debug {
 			fmt.Println("Closing FastAudioSocket resources...")
 		}
-		close(s.PacketChan)
+		close(s.AudioChan)
 		close(s.MonitorChan)
 		s.conn.Close()
 	}()
@@ -125,7 +134,7 @@ func NewFastAudioSocket(ctx context.Context, conn net.Conn, debug bool, monitorE
 // readUUID reads the initial handshake packet containing the call UUID.
 func (s *FastAudioSocket) readUUID() (uuid.UUID, error) {
 	header := make([]byte, HeaderSize)
-	if _, err := s.conn.Read(header); err != nil {
+	if _, err := io.ReadFull(s.conn, header); err != nil {
 		return uuid.Nil, err
 	}
 
@@ -141,7 +150,7 @@ func (s *FastAudioSocket) readUUID() (uuid.UUID, error) {
 	}
 
 	payload := make([]byte, payloadLength)
-	if _, err := s.conn.Read(payload); err != nil {
+	if _, err := io.ReadFull(s.conn, payload); err != nil {
 		return uuid.Nil, err
 	}
 
@@ -155,7 +164,7 @@ func (s *FastAudioSocket) readUUID() (uuid.UUID, error) {
 // readChunk reads a single frame from the socket, handling variable payload lengths dynamically.
 func (s *FastAudioSocket) readChunk() (PacketReader, error) {
 	header := make([]byte, HeaderSize)
-	if _, err := s.conn.Read(header); err != nil {
+	if _, err := io.ReadFull(s.conn, header); err != nil {
 		return PacketReader{Type: PacketTypeError}, err
 	}
 
@@ -163,7 +172,7 @@ func (s *FastAudioSocket) readChunk() (PacketReader, error) {
 	payloadLength := binary.BigEndian.Uint16(header[1:3])
 	payload := make([]byte, payloadLength)
 
-	if _, err := s.conn.Read(payload); err != nil {
+	if _, err := io.ReadFull(s.conn, payload); err != nil {
 		return PacketReader{Type: packetType, Length: payloadLength}, err
 	}
 
@@ -184,34 +193,32 @@ func (s *FastAudioSocket) streamRead(wg *sync.WaitGroup) {
 		defer fmt.Println("-- StreamRead STOP --")
 	}
 
-	// Goroutine to read from connection and push to PacketChan
+	// The reader owns PacketChan. Join it before closing public output channels.
+	readerDone := make(chan struct{})
 	go func() {
-		defer func() {
-			if r := recover(); r != nil && s.debug {
-				fmt.Printf("Recovered in streamRead: %v\n", r)
-			}
-		}()
-
+		defer close(readerDone)
+		defer close(s.PacketChan)
 		for {
+			packet, err := s.readChunk()
+			if err != nil {
+				packet = PacketReader{Type: PacketTypeError}
+			} else {
+				atomic.AddInt32(&s.chunkCounter, 1)
+			}
 			select {
 			case <-s.callCtx.Done():
 				return
-			default:
-				packet, err := s.readChunk()
-				if err != nil {
-					if s.debug {
-						fmt.Printf("Read error: %v\n", err)
-					}
-					// Avoid sending error packet if context is already done
-					if s.callCtx.Err() == nil {
-						s.PacketChan <- PacketReader{Type: PacketTypeError}
-					}
-					return
-				}
-				atomic.AddInt32(&s.chunkCounter, 1)
-				s.PacketChan <- packet
+			case s.PacketChan <- packet:
+			}
+			if err != nil || packet.Type == PacketTypeHangup || packet.Type == PacketTypeError {
+				return
 			}
 		}
+	}()
+	defer func() {
+		s.cancel()
+		s.conn.Close()
+		<-readerDone
 	}()
 
 	seqNumber := uint32(0)
@@ -225,7 +232,11 @@ func (s *FastAudioSocket) streamRead(wg *sync.WaitGroup) {
 			return
 		case <-chunkTicker.C:
 			if !lastPacketReceived {
-				s.AudioChan <- PacketReader{Sequence: seqNumber, SilenceSuppressed: true}
+				select {
+				case <-s.callCtx.Done():
+					return
+				case s.AudioChan <- PacketReader{Sequence: seqNumber, SilenceSuppressed: true}:
+				}
 				seqNumber++
 			}
 			lastPacketReceived = false
@@ -236,13 +247,14 @@ func (s *FastAudioSocket) streamRead(wg *sync.WaitGroup) {
 
 			p.Sequence = seqNumber
 
-			// ---------------------------------------------------------
-			// CRITICAL FIX: Send packet to AudioChan BEFORE checking type.
-			// This ensures PacketTypeError (Hangup) is sent to the user.
-			// ---------------------------------------------------------
-			s.AudioChan <- p
+			// Deliver terminal frames before closing AudioChan.
+			select {
+			case <-s.callCtx.Done():
+				return
+			case s.AudioChan <- p:
+			}
 
-			if p.Type == PacketTypeError {
+			if p.Type == PacketTypeError || p.Type == PacketTypeHangup {
 				return
 			}
 
@@ -290,10 +302,12 @@ func (s *FastAudioSocket) monitor(wg *sync.WaitGroup) {
 			}
 
 			if msg != "" {
-				s.MonitorChan <- MonitorResponse{
-					Message:              msg,
-					ChunkCounterReceived: chunksReceived,
-					ExpectedChunks:       chunksExpected,
+				select {
+				case <-s.callCtx.Done():
+					return
+				case s.MonitorChan <- MonitorResponse{
+					Message: msg, ChunkCounterReceived: chunksReceived, ExpectedChunks: chunksExpected,
+				}:
 				}
 			}
 		}
@@ -308,20 +322,25 @@ func (p *PacketWriter) toBytes() []byte {
 	return buf
 }
 
-// sendPacket writes data to the connection, ignoring broken pipe errors common in hangup scenarios.
-func (s *FastAudioSocket) sendPacket(packet PacketWriter) {
+// sendPacket reports failed and short writes; callers must not count them as audio.
+func (s *FastAudioSocket) sendPacket(packet PacketWriter) error {
 	serialized := packet.toBytes()
-	if _, err := s.conn.Write(serialized); err != nil {
-		if strings.Contains(err.Error(), "broken pipe") || strings.Contains(err.Error(), "connection reset") {
-			return
-		}
-		if s.debug {
-			fmt.Printf("Tx Error: %v\n", err)
-		}
+	n, err := s.conn.Write(serialized)
+	if n > 0 && n < len(serialized) {
+		// A partly written frame cannot be replaced by a new playback frame.
+		// Close instead of leaving the next caller with a corrupt byte stream.
+		_ = s.conn.Close()
 	}
+	if err != nil {
+		return err
+	}
+	if n != len(serialized) {
+		return io.ErrShortWrite
+	}
+	return nil
 }
 
-// Play streams audio data synchronously using a ticker, avoiding unnecessary goroutines.
+// Play sends raw 8 kHz mono PCM16 audio synchronously with deadline pacing.
 func (s *FastAudioSocket) Play(playerCtx context.Context, audioData []byte) error {
 	return s.PlayControlled(playerCtx, audioData, nil)
 }
@@ -336,11 +355,17 @@ func (s *FastAudioSocket) PlayControlled(playerCtx context.Context, audioData []
 		return nil
 	}
 
-	pace := newPacer(TickerInterval)
+	pace, err := s.beginPlayback()
+	if err != nil {
+		return err
+	}
+	defer s.finishPlayback(pace)
+	waitCtx, stopWaiting := s.playbackContext(playerCtx)
+	defer stopWaiting()
 
 	for i := 0; i < len(audioData); i += WriteChunkSize {
 		if control != nil {
-			if err := control.Wait(playerCtx); err != nil {
+			if err := control.Wait(waitCtx); err != nil {
 				return err
 			}
 		}
@@ -357,11 +382,17 @@ func (s *FastAudioSocket) PlayControlled(playerCtx context.Context, audioData []
 			return err
 		}
 
-		s.sendPacket(PacketWriter{
+		err := s.sendPacket(PacketWriter{
 			Header:  writingHeader,
 			Payload: chunk,
 		})
-		pace.advance()
+		s.recordWrite(pace, time.Now(), err)
+		if err != nil {
+			if ctxErr := pendingContextError(playerCtx, s.callCtx); ctxErr != nil {
+				return ctxErr
+			}
+			return err
+		}
 
 		if control != nil {
 			control.Played(TickerInterval)
@@ -372,13 +403,20 @@ func (s *FastAudioSocket) PlayControlled(playerCtx context.Context, audioData []
 
 // PlayStreaming reads from a data channel and streams it to the socket as a
 // single realigned byte stream. The caller must close dataChan to flush the tail.
+// errChan is retained for source compatibility and is unused; errors are returned.
 func (s *FastAudioSocket) PlayStreaming(playerCtx context.Context, dataChan chan []byte, errChan chan error) error {
 	if s.debug {
 		fmt.Println("-- PlayStreaming START --")
 		defer fmt.Println("-- PlayStreaming STOP --")
 	}
 
-	pace := newPacer(TickerInterval)
+	pace, err := s.beginPlayback()
+	if err != nil {
+		return err
+	}
+	defer s.finishPlayback(pace)
+	_, stopWaiting := s.playbackContext(playerCtx)
+	defer stopWaiting()
 	var carry []byte
 
 	for {
@@ -399,11 +437,17 @@ func (s *FastAudioSocket) PlayStreaming(playerCtx context.Context, dataChan chan
 					return err
 				}
 
-				s.sendPacket(PacketWriter{
+				err := s.sendPacket(PacketWriter{
 					Header:  writingHeader,
 					Payload: carry[:WriteChunkSize],
 				})
-				pace.advance()
+				s.recordWrite(pace, time.Now(), err)
+				if err != nil {
+					if ctxErr := pendingContextError(playerCtx, s.callCtx); ctxErr != nil {
+						return ctxErr
+					}
+					return err
+				}
 
 				carry = carry[WriteChunkSize:]
 			}
@@ -420,13 +464,17 @@ func (s *FastAudioSocket) flushTail(playerCtx context.Context, pace *pacer, carr
 		return err
 	}
 
-	s.sendPacket(PacketWriter{
+	err := s.sendPacket(PacketWriter{
 		Header:  writingHeader,
 		Payload: padChunkWithSilence(carry),
 	})
-	pace.advance()
-
-	return nil
+	s.recordWrite(pace, time.Now(), err)
+	if err != nil {
+		if ctxErr := pendingContextError(playerCtx, s.callCtx); ctxErr != nil {
+			return ctxErr
+		}
+	}
+	return err
 }
 
 // padChunkWithSilence appends the silence payload to the chunk to reach the required block size.
