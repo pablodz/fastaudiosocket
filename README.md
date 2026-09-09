@@ -93,7 +93,7 @@ limits; all frames can arrive successfully while playback timing still fails.
 The Go source and tests are retained; full results and the temporary Asterisk
 lab recipe are in the report.
 
-The [performance follow-up](https://github.com/pablodz/fastaudiosocket/issues/8)
+The [performance follow-up](https://github.com/pablodz/fastaudiosocket/issues/8#issuecomment-5606613097)
 adds sender allocation and scheduler-delay measurements, plus optional CPU,
 allocation, blocking, mutex, and execution-trace profiles. Profiles require
 `-profile` and an explicit `-profile-output` path; collect them separately from
