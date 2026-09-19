@@ -145,6 +145,24 @@ network/scheduler delay can also cause an idle interval. AudioSocket has no
 source timestamps or sequence numbers to distinguish these cases. The generated
 `Sequence` field is local to this library.
 
+## Ulaw silence
+
+`SilenceSuppressed` marks an interval the sender did not transmit, so the packet
+carries no payload. A consumer that records or forwards the read channel has to
+fill that interval itself, and on a ulaw channel the filler is a 160-byte frame
+of `0xFF`. `UlawSilence` builds that filler for a duration, truncating anything
+shorter than a chunk, and `SilentUlawChunk` returns the single shared frame for
+hot paths that only read it; writing to it corrupts every later use.
+
+```go
+gap := fastaudiosocket.UlawSilence(3 * fastaudiosocket.UlawChunkDuration)
+```
+
+`IsSilentUlawChunk` reports whether a 160-byte frame is silence, counting both
+`0xFF` and the `0xFD` some carriers send instead. It is a byte comparison on one
+frame, not a voice activity detector, and it says nothing about a PCM16 payload:
+the write path of this library is PCM16 at 8 kHz, and its padding is zeros.
+
 Call cancellation closes the owned connection and releases readers blocked by a
 slow consumer. It also closes output channels. This prevents backpressure from
 leaving goroutines behind; it does not make an arbitrarily slow audio consumer
