@@ -1,5 +1,10 @@
 # FastAudioSocket
 
+> [!WARNING]
+> **Deprecated.** This repository is archived and no longer maintained. Use
+> Asterisk's [`chan_websocket`](https://github.com/asterisk/asterisk/blob/master/channels/chan_websocket.c)
+> channel driver instead: it handles concurrent calls better than AudioSocket.
+
 FastAudioSocket is a Go package for handling audio and DTMF packets over the Asterisk AudioSocket protocol.
 
 ## Install
